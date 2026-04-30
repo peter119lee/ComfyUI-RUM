@@ -99,6 +99,47 @@ def combine_rum_conditioning(
     return output
 
 
+class RUMDiffusersMatchWrapper:
+    def __init__(self, base_model, base_text_tokens: int, extra_text_tokens: int):
+        if base_text_tokens <= 0:
+            raise ValueError("diffusers match base_text_tokens 必须大于 0。")
+        if extra_text_tokens <= 0:
+            raise ValueError("diffusers match extra_text_tokens 必须大于 0。")
+        self.base_model = base_model
+        self.base_text_tokens = int(base_text_tokens)
+        self.extra_text_tokens = int(extra_text_tokens)
+
+    def __call__(self, apply_model, params):
+        conditions = params["c"].copy()
+        cross_attn = conditions.get("c_crossattn")
+        if cross_attn is not None:
+            total_tokens = self.base_text_tokens + self.extra_text_tokens
+            if cross_attn.shape[1] > total_tokens:
+                base = cross_attn[:, : self.base_text_tokens]
+                extra = cross_attn[:, -self.extra_text_tokens :]
+                conditions["c_crossattn"] = torch.cat([base, extra], dim=1)
+        return apply_model(params["input"], params["timestep"], **conditions)
+
+    def clone(self):
+        return RUMDiffusersMatchWrapper(
+            self.base_model,
+            base_text_tokens=self.base_text_tokens,
+            extra_text_tokens=self.extra_text_tokens,
+        )
+
+
+def apply_diffusers_match_model_wrapper(model, *, base_text_tokens: int, extra_text_tokens: int):
+    patched = model.clone()
+    patched.set_model_unet_function_wrapper(
+        RUMDiffusersMatchWrapper(
+            patched,
+            base_text_tokens=base_text_tokens,
+            extra_text_tokens=extra_text_tokens,
+        )
+    )
+    return patched
+
+
 def apply_rum_model_patch(model, checkpoint_path: str | Path, *, base_text_tokens: int, strict: bool):
     checkpoint = _resolve_checkpoint_path(checkpoint_path)
     state_dict = load_file(str(checkpoint), device="cpu")

@@ -103,12 +103,44 @@ class RUMFlux2CombineConditioning:
         )
 
 
+class RUMFlux2DiffusersMatchModelPatch:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "model": ("MODEL",),
+                "base_text_tokens": ("INT", {"default": 200, "min": 1, "max": 4096, "step": 1}),
+                "extra_text_tokens": ("INT", {"default": 77, "min": 1, "max": 512, "step": 1}),
+            }
+        }
+
+    RETURN_TYPES = ("MODEL", "STRING")
+    RETURN_NAMES = ("model", "status")
+    FUNCTION = "apply_patch"
+    CATEGORY = "RUM/native"
+
+    def apply_patch(self, model, base_text_tokens: int, extra_text_tokens: int):
+        from .rum_native import apply_diffusers_match_model_wrapper
+
+        patched = apply_diffusers_match_model_wrapper(
+            model,
+            base_text_tokens=base_text_tokens,
+            extra_text_tokens=extra_text_tokens,
+        )
+        return (
+            patched,
+            f"Diffusers-match token crop 已启用：base={base_text_tokens}, extra={extra_text_tokens}",
+        )
+
+
 NODE_CLASS_MAPPINGS = {
     "RUMFlux2ApplyModelPatch": RUMFlux2ApplyModelPatch,
     "RUMFlux2CombineConditioning": RUMFlux2CombineConditioning,
+    "RUMFlux2DiffusersMatchModelPatch": RUMFlux2DiffusersMatchModelPatch,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "RUMFlux2ApplyModelPatch": "RUM FLUX.2 Apply Model Patch",
     "RUMFlux2CombineConditioning": "RUM FLUX.2 Combine Conditioning",
+    "RUMFlux2DiffusersMatchModelPatch": "RUM FLUX.2 Diffusers Match Model Patch",
 }

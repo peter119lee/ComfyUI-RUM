@@ -97,6 +97,14 @@ A minimal API workflow is available at:
 examples/basic_workflow_api.json
 ```
 
+If you want a workflow that is closer to the old diffusers branch output, use:
+
+```text
+examples/diffusers_match_workflow_api.json
+```
+
+That workflow adds `RUM FLUX.2 Diffusers Match Model Patch`, uses `base_text_tokens=200`, and uses the same example seed as the old diffusers output. It is still not bit-perfect because native ComfyUI uses ComfyUI CLIP files and ComfyUI sampling, while the old branch used a diffusers SDXL teacher folder.
+
 Recommended first settings:
 
 ```text
@@ -129,6 +137,7 @@ Known limitations:
 
 - The RUM patch node expects a FLUX.2-Klein 4B-compatible base model.
 - `base_text_tokens` must match the FLUX.2 text conditioning length; normal ComfyUI FLUX.2-Klein uses `512`.
+- `RUM FLUX.2 Diffusers Match Model Patch` is only for matching the old diffusers branch more closely; do not use it for the normal native workflow.
 - LoRA and ControlNet compatibility has not been validated yet.
 - Use `Flux2Scheduler` + `SamplerCustomAdvanced`; plain `KSampler scheduler=simple` is known to produce bad/glitched results for FLUX.2 here.
 
@@ -273,6 +282,14 @@ python scripts/download_models.py --token YOUR_HF_TOKEN
 examples/basic_workflow_api.json
 ```
 
+如果你想更接近旧 diffusers 分支的输出，用这个：
+
+```text
+examples/diffusers_match_workflow_api.json
+```
+
+这个 workflow 会多一个 `RUM FLUX.2 Diffusers Match Model Patch`，用 `base_text_tokens=200`，并使用旧 diffusers 示例图同一个 seed。它不是 100% 像素级复刻，因为 native ComfyUI 用的是 ComfyUI 的 CLIP 文件和采样系统，而旧分支用的是 diffusers 的 SDXL teacher 文件夹。
+
 推荐初始参数：
 
 ```text
@@ -305,6 +322,7 @@ python scripts/check_install.py
 
 - RUM patch node 需要 FLUX.2-Klein 4B 兼容底模。
 - `base_text_tokens` 要和 FLUX.2 文本 conditioning 长度一致；普通 ComfyUI FLUX.2-Klein 通常是 `512`。
+- `RUM FLUX.2 Diffusers Match Model Patch` 只用于尽量贴近旧 diffusers 分支；普通 native workflow 不要加它。
 - LoRA / ControlNet 兼容性还没验证。
 - 请用 `Flux2Scheduler` + `SamplerCustomAdvanced`；普通 `KSampler scheduler=simple` 在这里已知会容易出噪声/崩图。
 

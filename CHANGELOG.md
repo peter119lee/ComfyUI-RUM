@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.2
+
+- Added `RUM FLUX.2 Diffusers Match Model Patch` for old diffusers-style token cropping.
+- Added `examples/diffusers_match_workflow_api.json` with the old example seed and `base_text_tokens=200`.
+
 ## 0.2.1
 
 - Updated the recommended native workflow to use `Flux2Scheduler` + `SamplerCustomAdvanced` instead of plain `KSampler scheduler=simple`.
