@@ -1,5 +1,5 @@
 {
-  "last_node_id": 21,
+  "last_node_id": 91,
   "last_link_id": 25,
   "nodes": [
     {
@@ -694,6 +694,52 @@
       "widgets_values": [
         "10,20,30"
       ]
+    },
+    {
+      "id": 90,
+      "type": "Note",
+      "pos": [
+        40,
+        -180
+      ],
+      "size": [
+        520,
+        120
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {
+        "text": "模型要求：rum-flux2-klein-4b-preview.safetensors、qwen_3_4b.safetensors、flux2-vae.safetensors，以及 teacher CLIP：waiIllustriousSDXL_v160_clip_l.safetensors / waiIllustriousSDXL_v160_clip_g.safetensors。"
+      },
+      "widgets_values": [
+        "模型要求：rum-flux2-klein-4b-preview.safetensors、qwen_3_4b.safetensors、flux2-vae.safetensors，以及 teacher CLIP：waiIllustriousSDXL_v160_clip_l.safetensors / waiIllustriousSDXL_v160_clip_g.safetensors。"
+      ]
+    },
+    {
+      "id": 91,
+      "type": "Note",
+      "pos": [
+        600,
+        -180
+      ],
+      "size": [
+        520,
+        120
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {
+        "text": "下载命令：python scripts/download_models.py --all。这个 workflow 是 native 近似 diffusers，不保证同 seed 同图；选错 CLIP 会明显不像。"
+      },
+      "widgets_values": [
+        "下载命令：python scripts/download_models.py --all。这个 workflow 是 native 近似 diffusers，不保证同 seed 同图；选错 CLIP 会明显不像。"
+      ]
     }
   ],
   "links": [
@@ -851,6 +897,17 @@
         0,
         0
       ]
+    },
+    "rum_model_requirements": {
+      "download_command": "python scripts/download_models.py --all",
+      "required_models": [
+        "models/diffusion_models/rum-flux2-klein-4b-preview.safetensors",
+        "models/text_encoders/qwen_3_4b.safetensors",
+        "models/text_encoders/waiIllustriousSDXL_v160_clip_l.safetensors",
+        "models/text_encoders/waiIllustriousSDXL_v160_clip_g.safetensors",
+        "models/vae/flux2-vae.safetensors"
+      ],
+      "warning": "Native diffusers-match is approximate, not exact pixel/character reproduction."
     }
   },
   "version": 0.4

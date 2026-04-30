@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.5
+
+- Documented why native ComfyUI cannot exactly reproduce the old diffusers output.
+- Added direct model-source mapping, Windows/Aki download commands, and workflow-specific model requirements to README.
+- Added `--include-teacher-clip` and `--all` to the model download helper.
+- Expanded install checks so missing sample-workflow model files are visible immediately.
+- Added model requirement notes/titles to sample workflows.
+
 ## 0.2.4
 
 - Fixed the visual diffusers-match workflow so it uses the same native approximation path as the API workflow.

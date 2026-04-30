@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import argparse
+import os
+import re
 import shutil
 from pathlib import Path
 
 from huggingface_hub import hf_hub_download
 
 
-FILES = [
+REQUIRED_FILES = [
     {
         "label": "FLUX.2-Klein 4B base diffusion model",
         "repo": "black-forest-labs/FLUX.2-klein-base-4b-fp8",
@@ -38,22 +40,57 @@ FILES = [
     },
 ]
 
-OPTIONAL_SDXL_CLIP_FILES = [
+GENERIC_SDXL_CLIP_FILES = [
     {
-        "label": "SDXL/SD3 CLIP-L text encoder",
+        "label": "Generic SDXL/SD3 CLIP-L text encoder",
         "repo": "Comfy-Org/stable-diffusion-3.5-fp8",
         "filename": "text_encoders/clip_l.safetensors",
         "folder": "text_encoders",
         "target": "clip_l.safetensors",
     },
     {
-        "label": "SDXL/SD3 CLIP-G text encoder",
+        "label": "Generic SDXL/SD3 CLIP-G text encoder",
         "repo": "Comfy-Org/stable-diffusion-3.5-fp8",
         "filename": "text_encoders/clip_g.safetensors",
         "folder": "text_encoders",
         "target": "clip_g.safetensors",
     },
 ]
+
+TEACHER_SDXL_CLIP_FILES = [
+    {
+        "label": "Diffusers-match SDXL teacher CLIP-L text encoder",
+        "repo": "Ine007/waiIllustriousSDXL_v160",
+        "filename": "text_encoder/model.safetensors",
+        "folder": "text_encoders",
+        "target": "waiIllustriousSDXL_v160_clip_l.safetensors",
+    },
+    {
+        "label": "Diffusers-match SDXL teacher CLIP-G text encoder",
+        "repo": "Ine007/waiIllustriousSDXL_v160",
+        "filename": "text_encoder_2/model.safetensors",
+        "folder": "text_encoders",
+        "target": "waiIllustriousSDXL_v160_clip_g.safetensors",
+    },
+]
+
+
+def normalize_cli_path(path: Path) -> Path:
+    raw = str(path).strip().strip('"')
+    normalized = raw.replace("\\", "/")
+    if os.name == "nt":
+        match = re.match(r"^/mnt/([a-zA-Z])(?:/(.*))?$", normalized)
+        if match:
+            drive = match.group(1).upper()
+            rest = (match.group(2) or "").replace("/", "\\")
+            return Path(f"{drive}:\\{rest}")
+    else:
+        match = re.match(r"^([a-zA-Z]):/(.*)$", normalized)
+        if match:
+            drive = match.group(1).lower()
+            rest = match.group(2)
+            return Path("/mnt") / drive / rest
+    return Path(raw).expanduser().resolve()
 
 
 def parse_args() -> argparse.Namespace:
@@ -68,7 +105,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--include-sdxl-clip",
         action="store_true",
-        help="Also try downloading clip_l.safetensors and clip_g.safetensors for DualCLIPLoader type=sdxl.",
+        help="Also download generic clip_l.safetensors and clip_g.safetensors for the normal native workflow.",
+    )
+    parser.add_argument(
+        "--include-teacher-clip",
+        action="store_true",
+        help="Also download waiIllustriousSDXL_v160 CLIP files used by the diffusers-match sample workflow.",
+    )
+    parser.add_argument(
+        "--all",
+        action="store_true",
+        help="Download base files plus both generic SDXL CLIP and diffusers-match teacher CLIP files.",
     )
     parser.add_argument("--token", default=None, help="Optional Hugging Face token.")
     return parser.parse_args()
@@ -89,18 +136,43 @@ def download_one(item: dict[str, str], models_dir: Path, token: str | None) -> P
     return target_path
 
 
+def selected_files(args: argparse.Namespace) -> list[dict[str, str]]:
+    files = list(REQUIRED_FILES)
+    if args.include_sdxl_clip or args.all:
+        files.extend(GENERIC_SDXL_CLIP_FILES)
+    if args.include_teacher_clip or args.all:
+        files.extend(TEACHER_SDXL_CLIP_FILES)
+    return files
+
+
+def print_workflow_hint(args: argparse.Namespace) -> None:
+    print("\nWorkflow hints:")
+    if args.include_sdxl_clip or args.all:
+        print("- examples/basic_workflow_api.json can use clip_l.safetensors + clip_g.safetensors.")
+    else:
+        print("- For examples/basic_workflow_api.json, rerun with --include-sdxl-clip.")
+    if args.include_teacher_clip or args.all:
+        print(
+            "- examples/diffusers_match_workflow*.json can use "
+            "waiIllustriousSDXL_v160_clip_l.safetensors + waiIllustriousSDXL_v160_clip_g.safetensors."
+        )
+    else:
+        print("- For examples/diffusers_match_workflow*.json, rerun with --include-teacher-clip.")
+
+
 def main() -> None:
     args = parse_args()
-    comfy_root = args.comfy_root.expanduser().resolve()
+    comfy_root = normalize_cli_path(args.comfy_root)
     models_dir = comfy_root / "models"
     models_dir.mkdir(parents=True, exist_ok=True)
 
-    selected = FILES + (OPTIONAL_SDXL_CLIP_FILES if args.include_sdxl_clip else [])
-    written = [download_one(item, models_dir, args.token) for item in selected]
+    print(f"ComfyUI root: {comfy_root}")
+    written = [download_one(item, models_dir, args.token) for item in selected_files(args)]
 
     print("\nDone. Restart ComfyUI, then select these files in normal ComfyUI loader nodes:")
     for path in written:
         print(path)
+    print_workflow_hint(args)
 
 
 if __name__ == "__main__":

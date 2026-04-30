@@ -5,6 +5,9 @@
       "rum_checkpoint_name": "rum-flux2-klein-4b-preview.safetensors",
       "rum_checkpoint_path": "",
       "base_text_tokens": 200
+    },
+    "_meta": {
+      "title": "Load RUM checkpoint directly: rum-flux2-klein-4b-preview.safetensors"
     }
   },
   "3": {
@@ -24,6 +27,9 @@
       "clip_name": "qwen_3_4b.safetensors",
       "type": "flux2",
       "device": "default"
+    },
+    "_meta": {
+      "title": "Load Qwen text encoder: qwen_3_4b.safetensors"
     }
   },
   "5": {
@@ -33,6 +39,9 @@
       "clip_name2": "waiIllustriousSDXL_v160_clip_g.safetensors",
       "type": "sdxl",
       "device": "default"
+    },
+    "_meta": {
+      "title": "Load teacher CLIP: waiIllustriousSDXL_v160_clip_l/g.safetensors"
     }
   },
   "6": {
@@ -75,6 +84,9 @@
       "extra_text_tokens": 77,
       "sdxl_clip_width": 2048,
       "use_sdxl_extra": true
+    },
+    "_meta": {
+      "title": "Combine positive Qwen 200 + teacher SDXL 77"
     }
   },
   "9": {
@@ -85,6 +97,9 @@
         0
       ],
       "text": ""
+    },
+    "_meta": {
+      "title": "Negative Qwen only, keep 512 tokens"
     }
   },
   "12": {
@@ -100,6 +115,9 @@
     "inputs": {
       "noise_seed": 7478533297787,
       "dtype": "bfloat16"
+    },
+    "_meta": {
+      "title": "Diffusers-style CPU BF16 noise"
     }
   },
   "14": {
@@ -145,6 +163,9 @@
     "class_type": "VAELoader",
     "inputs": {
       "vae_name": "flux2-vae.safetensors"
+    },
+    "_meta": {
+      "title": "Load FLUX.2 VAE: flux2-vae.safetensors"
     }
   },
   "19": {
@@ -180,7 +201,7 @@
     },
     "class_type": "RUMFlux2SetQwenLayers",
     "_meta": {
-      "title": "RUM FLUX.2 Set Qwen Layers"
+      "title": "Positive Qwen layers: 10,20,30"
     }
   },
   "22": {
@@ -201,7 +222,7 @@
     },
     "class_type": "RUMFlux2DiffusersCFGuider",
     "_meta": {
-      "title": "RUM FLUX.2 Diffusers CFG Guider"
+      "title": "Diffusers-match CFG guider"
     }
   }
 }

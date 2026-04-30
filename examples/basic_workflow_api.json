@@ -4,6 +4,9 @@
     "inputs": {
       "unet_name": "flux-2-klein\\flux-2-klein-4b-fp8.safetensors",
       "weight_dtype": "default"
+    },
+    "_meta": {
+      "title": "Load FLUX.2-Klein base: flux-2-klein/flux-2-klein-4b-fp8.safetensors"
     }
   },
   "2": {
@@ -17,6 +20,9 @@
       "base_text_tokens": 512,
       "strict": true,
       "rum_checkpoint_path": ""
+    },
+    "_meta": {
+      "title": "Apply RUM checkpoint: rum-flux2-klein-4b-preview.safetensors"
     }
   },
   "3": {
@@ -25,6 +31,9 @@
       "clip_name": "qwen_3_4b.safetensors",
       "type": "flux2",
       "device": "default"
+    },
+    "_meta": {
+      "title": "Load Qwen text encoder: qwen_3_4b.safetensors"
     }
   },
   "4": {
@@ -34,6 +43,9 @@
       "clip_name2": "clip_g.safetensors",
       "type": "sdxl",
       "device": "default"
+    },
+    "_meta": {
+      "title": "Load generic SDXL CLIP: clip_l.safetensors + clip_g.safetensors"
     }
   },
   "5": {
@@ -73,6 +85,9 @@
       "extra_text_tokens": 77,
       "sdxl_clip_width": 2048,
       "use_sdxl_extra": true
+    },
+    "_meta": {
+      "title": "Combine positive Qwen 512 + SDXL 77"
     }
   },
   "8": {
@@ -112,6 +127,9 @@
       "extra_text_tokens": 77,
       "sdxl_clip_width": 2048,
       "use_sdxl_extra": true
+    },
+    "_meta": {
+      "title": "Combine negative Qwen 512 + SDXL 77"
     }
   },
   "11": {
@@ -189,6 +207,9 @@
     "class_type": "VAELoader",
     "inputs": {
       "vae_name": "flux2-vae.safetensors"
+    },
+    "_meta": {
+      "title": "Load FLUX.2 VAE: flux2-vae.safetensors"
     }
   },
   "18": {
