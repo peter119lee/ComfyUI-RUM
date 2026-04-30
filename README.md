@@ -297,3 +297,295 @@ FLUX.2-Klein 4B 加 Qwen3 4B 文本编码器很吃显存。建议：
 
 - **RimoChan / RUM**：原始 RUM 项目、模型与参考推理代码来自 [RimoChan/RUM](https://github.com/RimoChan/RUM)。没有这个项目，就没有这个 ComfyUI 适配。
 - **ComfyUI**：节点系统和 native workflow 基础来自 [comfyanonymous/ComfyUI](https://github.com/comfyanonymous/ComfyUI)。
+
+---
+
+# ComfyUI-RUM English README
+
+This is a **native ComfyUI node adapter** for [RimoChan/RUM](https://github.com/RimoChan/RUM), targeting `RUM-FLUX.2-klein-4B-preview`. The original RUM idea, model, and reference inference code come from RimoChan's project.
+
+The `main` branch is the **native ComfyUI version**: model loading, conditioning, latent creation, sampling, VAE decode, and image saving are routed through ComfyUI systems as much as possible. The old all-in-one diffusers wrapper is kept on the [`diffusers-pipeline`](https://github.com/peter119lee/ComfyUI-RUM/tree/diffusers-pipeline) branch.
+
+> **License Notice**
+>
+> This project adapts behavior from the public RUM reference inference code. At the time this project was created, upstream `RimoChan/RUM` did not provide a clear LICENSE. Unless upstream adds a LICENSE or gives explicit permission, publishing this to Comfy Registry or redistributing it widely is not recommended.
+>
+> This repository does not include model weights. Model files follow their own upstream licenses and access rules.
+
+## What It Does
+
+RUM adds one extra SDXL CLIP text-conditioning path on top of FLUX.2-Klein. Standard ComfyUI FLUX.2 nodes do not know how to feed that extra conditioning into the RUM transformer, so this node pack provides:
+
+- `RUM FLUX.2 Apply Model Patch`: applies RUM weights and dual text-projection layers onto a normal ComfyUI FLUX.2-Klein `MODEL`.
+- `RUM FLUX.2 Combine Conditioning`: combines FLUX.2-Klein Qwen conditioning and SDXL CLIP conditioning into the format expected by RUM.
+- `RUM FLUX.2 Load Native Model`: converts the RUM diffusers-format checkpoint directly into a ComfyUI `MODEL`, mainly for the diffusers-match workflow.
+- `RUM FLUX.2 Diffusers Noise` / `RUM FLUX.2 Diffusers CFG Guider`: helper nodes used only to approximate the old diffusers reference path. They are not recommended for normal workflows.
+
+In short: the normal native workflow is for regular ComfyUI usage; the diffusers-match workflow approximates the most important differences from the old diffusers path, but it does not guarantee the same image.
+
+## Why Native ComfyUI Cannot Match Diffusers 100%
+
+The direct reason is: **it is not the same execution environment**. The public RUM reference path uses diffusers. This native adapter rebuilds that path inside ComfyUI's model, CLIP, sampler, noise, and conditioning systems. If even one detail changes, the diffusion process can drift over sampling steps, causing the final character, composition, or style to change.
+
+The most important differences are:
+
+- **Different SDXL teacher CLIP**: the old diffusers path used the text encoders from `Ine007/waiIllustriousSDXL_v160`; generic `clip_l.safetensors` / `clip_g.safetensors` are not the same semantic condition.
+- **Different Qwen hidden states**: the old positive prompt path used specific Qwen layers `10,20,30`; normal ComfyUI encoding does not do this by default.
+- **Different token lengths**: the old positive path used Qwen 200 tokens + SDXL 77 tokens, while the negative path keeps Qwen 512 tokens instead of using the same merge logic.
+- **Different noise**: the old reference path used CPU BF16-style noise; ComfyUI's standard `RandomNoise` is not identical.
+- **Different CFG branch behavior**: positive and negative branches are not routed exactly the same way as standard ComfyUI `CFGGuider`.
+- **Different floating-point and scheduler details**: dtype, device, scheduler, patch order, and ComfyUI cache behavior can all affect the result.
+
+So the realistic goal is: **make the native node usable, structured, and reasonably close to diffusers; not promise same-seed same-image output**. Use the `diffusers-match` workflow if you want the closest native approximation to the old diffusers path. Use the normal native workflow if you want a more standard ComfyUI setup.
+
+## Model Locations
+
+Use standard ComfyUI model paths. Do not load a diffusers folder directly with native ComfyUI loaders.
+
+| Purpose | Source | Recommended Filename | Location |
+| --- | --- | --- | --- |
+| FLUX.2-Klein base model | [black-forest-labs/FLUX.2-klein-base-4b-fp8](https://huggingface.co/black-forest-labs/FLUX.2-klein-base-4b-fp8) | `flux-2-klein/flux-2-klein-4b-fp8.safetensors` | `ComfyUI/models/diffusion_models` |
+| RUM checkpoint | [rimochan/RUM-FLUX.2-klein-4B-preview](https://huggingface.co/rimochan/RUM-FLUX.2-klein-4B-preview) | `rum-flux2-klein-4b-preview.safetensors` | `ComfyUI/models/diffusion_models` |
+| FLUX.2-Klein Qwen text encoder | [Comfy-Org/z_image_turbo](https://huggingface.co/Comfy-Org/z_image_turbo) | `qwen_3_4b.safetensors` | `ComfyUI/models/text_encoders` |
+| FLUX.2 VAE | [Comfy-Org/flux2-dev](https://huggingface.co/Comfy-Org/flux2-dev) | `flux2-vae.safetensors` | `ComfyUI/models/vae` |
+| Normal native SDXL CLIP-L | [Comfy-Org/stable-diffusion-3.5-fp8](https://huggingface.co/Comfy-Org/stable-diffusion-3.5-fp8) | `clip_l.safetensors` | `ComfyUI/models/text_encoders` or `ComfyUI/models/clip` |
+| Normal native SDXL CLIP-G | [Comfy-Org/stable-diffusion-3.5-fp8](https://huggingface.co/Comfy-Org/stable-diffusion-3.5-fp8) | `clip_g.safetensors` | `ComfyUI/models/text_encoders` or `ComfyUI/models/clip` |
+| diffusers-match teacher CLIP-L | [Ine007/waiIllustriousSDXL_v160](https://huggingface.co/Ine007/waiIllustriousSDXL_v160) | `waiIllustriousSDXL_v160_clip_l.safetensors` | `ComfyUI/models/text_encoders` |
+| diffusers-match teacher CLIP-G | [Ine007/waiIllustriousSDXL_v160](https://huggingface.co/Ine007/waiIllustriousSDXL_v160) | `waiIllustriousSDXL_v160_clip_g.safetensors` | `ComfyUI/models/text_encoders` |
+
+If you see `model_index.json not found`, you probably selected a diffusers folder instead of a `.safetensors` file. Native ComfyUI loaders expect `.safetensors`, not diffusers directories.
+
+## Installation
+
+Clone this repository into `custom_nodes`:
+
+```bash
+cd ComfyUI/custom_nodes
+git clone https://github.com/peter119lee/ComfyUI-RUM.git
+cd ComfyUI-RUM
+python -m pip install -r requirements.txt
+```
+
+Restart ComfyUI after installation.
+
+For Aki's ComfyUI package on Windows, the path usually looks like:
+
+```text
+I:\ComfyUI-aki-v1.6\ComfyUI\custom_nodes\ComfyUI-RUM
+```
+
+## Download Models
+
+### Recommended Windows / Aki Command
+
+Open a terminal inside `I:\ComfyUI-aki-v1.6\ComfyUI\custom_nodes\ComfyUI-RUM`, then run:
+
+```bat
+I:\ComfyUI-aki-v1.6\python\python.exe scripts\download_models.py --comfy-root I:\ComfyUI-aki-v1.6\ComfyUI --all
+```
+
+`--all` downloads the base model, RUM checkpoint, Qwen text encoder, VAE, generic native CLIP files, and diffusers-match teacher CLIP files.
+
+If Hugging Face requires login or model-gate approval, accept the model terms on the website first, then run:
+
+```bat
+I:\ComfyUI-aki-v1.6\python\python.exe scripts\download_models.py --comfy-root I:\ComfyUI-aki-v1.6\ComfyUI --all --token YOUR_HF_TOKEN
+```
+
+### Generic Commands
+
+Download only the basic files:
+
+```bash
+python scripts/download_models.py
+```
+
+The normal native workflow also needs generic SDXL CLIP files:
+
+```bash
+python scripts/download_models.py --include-sdxl-clip
+```
+
+The `diffusers-match` workflow also needs teacher CLIP files:
+
+```bash
+python scripts/download_models.py --include-teacher-clip
+```
+
+Download everything:
+
+```bash
+python scripts/download_models.py --all
+```
+
+### Manual Download Mapping
+
+If the script fails, download manually from Hugging Face and place/rename the files as follows:
+
+| Hugging Face File | ComfyUI Path |
+| --- | --- |
+| `black-forest-labs/FLUX.2-klein-base-4b-fp8/flux-2-klein-base-4b-fp8.safetensors` | `models/diffusion_models/flux-2-klein/flux-2-klein-4b-fp8.safetensors` |
+| `rimochan/RUM-FLUX.2-klein-4B-preview/model-checkpoint-608000.safetensors` | `models/diffusion_models/rum-flux2-klein-4b-preview.safetensors` |
+| `Comfy-Org/z_image_turbo/split_files/text_encoders/qwen_3_4b.safetensors` | `models/text_encoders/qwen_3_4b.safetensors` |
+| `Comfy-Org/flux2-dev/split_files/vae/flux2-vae.safetensors` | `models/vae/flux2-vae.safetensors` |
+| `Comfy-Org/stable-diffusion-3.5-fp8/text_encoders/clip_l.safetensors` | `models/text_encoders/clip_l.safetensors` |
+| `Comfy-Org/stable-diffusion-3.5-fp8/text_encoders/clip_g.safetensors` | `models/text_encoders/clip_g.safetensors` |
+| `Ine007/waiIllustriousSDXL_v160/text_encoder/model.safetensors` | `models/text_encoders/waiIllustriousSDXL_v160_clip_l.safetensors` |
+| `Ine007/waiIllustriousSDXL_v160/text_encoder_2/model.safetensors` | `models/text_encoders/waiIllustriousSDXL_v160_clip_g.safetensors` |
+
+If you already have the old diffusers branch's `waiIllustriousSDXL_v160_text` folder, you can copy the teacher CLIP files directly:
+
+```bash
+python scripts/install_diffusers_teacher_clip.py /path/to/waiIllustriousSDXL_v160_text
+```
+
+Then select these in `DualCLIPLoader`:
+
+```text
+waiIllustriousSDXL_v160_clip_l.safetensors
+waiIllustriousSDXL_v160_clip_g.safetensors
+```
+
+## Example Workflows
+
+### Normal Native Workflow
+
+Use this for regular ComfyUI work:
+
+```text
+examples/basic_workflow_api.json
+```
+
+Required models:
+
+```text
+models/diffusion_models/flux-2-klein/flux-2-klein-4b-fp8.safetensors
+models/diffusion_models/rum-flux2-klein-4b-preview.safetensors
+models/text_encoders/qwen_3_4b.safetensors
+models/text_encoders/clip_l.safetensors
+models/text_encoders/clip_g.safetensors
+models/vae/flux2-vae.safetensors
+```
+
+Recommended starting parameters:
+
+```text
+base_text_tokens=512
+extra_text_tokens=77
+sdxl_clip_width=2048
+use_guidance_embedding=false
+CFGGuider cfg=5.0
+sampler=euler
+steps=20
+width=960
+height=1024
+```
+
+### diffusers-match Workflow
+
+Use this if you want a native approximation of the old diffusers reference path:
+
+```text
+examples/diffusers_match_workflow.json
+examples/diffusers_match_workflow_api.json
+```
+
+Required models:
+
+```text
+models/diffusion_models/rum-flux2-klein-4b-preview.safetensors
+models/text_encoders/qwen_3_4b.safetensors
+models/text_encoders/waiIllustriousSDXL_v160_clip_l.safetensors
+models/text_encoders/waiIllustriousSDXL_v160_clip_g.safetensors
+models/vae/flux2-vae.safetensors
+```
+
+This workflow differs from the normal native workflow:
+
+- It uses `RUM FLUX.2 Load Native Model` to load the RUM checkpoint directly.
+- Positive Qwen layers are set to `10,20,30`.
+- Positive conditioning uses `base_text_tokens=200` plus 77 SDXL extra tokens.
+- Negative conditioning keeps default Qwen 512 tokens and does not append SDXL extra tokens.
+- It uses `RUM FLUX.2 Diffusers Noise` for CPU BF16-style noise.
+- It uses `RUM FLUX.2 Diffusers CFG Guider` to mark positive and negative branches.
+- `DualCLIPLoader` must use `waiIllustriousSDXL_v160_clip_l.safetensors` + `waiIllustriousSDXL_v160_clip_g.safetensors`; using the generic CLIP files will make the result much less similar to the old diffusers output.
+
+This is not a magic quality node for normal workflows. It only tries to make native ComfyUI closer to the old diffusers reference path; the actual image can still differ significantly.
+
+## Verify Installation
+
+Run this with the same Python environment used by ComfyUI:
+
+```bash
+python scripts/check_install.py
+```
+
+Aki package example:
+
+```bat
+I:\ComfyUI-aki-v1.6\python\python.exe scripts\check_install.py --comfy-root I:\ComfyUI-aki-v1.6\ComfyUI
+```
+
+The script checks whether the node can import and whether ComfyUI can see recommended files under `diffusion_models`, `text_encoders`, and `vae`.
+
+## Current Limitations
+
+- The native version is still experimental.
+- `RUM FLUX.2 Apply Model Patch` requires a compatible FLUX.2-Klein 4B base model.
+- The normal native workflow should usually use `base_text_tokens=512`.
+- The diffusers-match workflow uses `base_text_tokens=200`; do not mix that setting into the normal workflow.
+- The old diffusers branch and native ComfyUI do not guarantee pixel-level or character-level reproduction.
+- Until upstream RUM has a clear LICENSE, publishing this to Comfy Registry is not recommended.
+
+## FAQ
+
+### The image is blurry, noisy, or structurally broken
+
+The most common cause is a wrong sampling chain. FLUX.2-Klein should not be connected to a random plain `KSampler` setup. Use:
+
+```text
+RandomNoise → CFGGuider → KSamplerSelect → Flux2Scheduler → SamplerCustomAdvanced
+```
+
+If you are trying to reproduce the old diffusers reference image, use `examples/diffusers_match_workflow_api.json`, not the normal native workflow.
+
+### The image does not look like the old diffusers output
+
+That is a real limitation, not your imagination. Common causes:
+
+- You used the normal native workflow instead of the diffusers-match workflow.
+- `DualCLIPLoader` used generic `clip_l.safetensors` / `clip_g.safetensors` instead of teacher CLIP.
+- Positive Qwen layers were not `10,20,30`.
+- Positive / negative token lengths were changed incorrectly.
+- Noise was not CPU BF16 diffusers-style noise.
+- ComfyUI cached old CLIP or old node outputs.
+
+The current diffusers-match workflow fixes the obvious traps, but it still does not promise exact character, composition, or pixel reproduction.
+
+### RUM checkpoint does not appear in the dropdown
+
+Confirm this file exists:
+
+```text
+ComfyUI/models/diffusion_models/rum-flux2-klein-4b-preview.safetensors
+```
+
+Then refresh model lists or restart ComfyUI.
+
+### `model_index.json not found`
+
+You selected a diffusers folder, not a `.safetensors` file. Native ComfyUI loaders need `.safetensors`.
+
+### Out of VRAM
+
+FLUX.2-Klein 4B plus Qwen3 4B text encoder is heavy. Try:
+
+- Use the FP8 base model first.
+- Test at a lower resolution.
+- Unload other models.
+- Restart ComfyUI after changing models.
+
+## Special Thanks
+
+- **RimoChan / RUM**: the original RUM project, model, and reference inference code come from [RimoChan/RUM](https://github.com/RimoChan/RUM). This ComfyUI adapter would not exist without that project.
+- **ComfyUI**: node system and native workflow foundation come from [comfyanonymous/ComfyUI](https://github.com/comfyanonymous/ComfyUI).
