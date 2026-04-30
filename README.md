@@ -171,47 +171,47 @@ Expected. The first run loads FLUX.2-klein, the RUM checkpoint, and SDXL text en
 
 ---
 
-# 繁體中文說明
+# 简体中文说明
 
-這是一組 ComfyUI 自訂節點，用來在 ComfyUI 裡執行 [RimoChan/RUM](https://github.com/RimoChan/RUM) 的 `RUM-FLUX.2-klein-4B-preview` 模型。
+这是一组 ComfyUI 自定义节点，用来在 ComfyUI 里运行 [RimoChan/RUM](https://github.com/RimoChan/RUM) 的 `RUM-FLUX.2-klein-4B-preview` 模型。
 
-RUM 的概念是把 SDXL 動漫模型的能力，蒸餾/轉移到更新的模型架構上。這個節點包裝了上游 diffusers 推理流程，並補上 RUM FLUX.2-klein 權重需要的額外 SDXL CLIP 條件分支。
+RUM 的概念是把 SDXL 动漫模型的能力，蒸馏/转移到更新的模型架构上。这个节点包装了上游 diffusers 推理流程，并补上 RUM FLUX.2-klein 权重需要的额外 SDXL CLIP 条件分支。
 
-> **授權 / 權限提醒**
+> **授权 / 权限提醒**
 >
-> 這個 wrapper 參考並重現了 RUM 公開推理程式中的部分核心邏輯。建立此 wrapper 時，上游 RUM repo 沒有附 LICENSE。因此在取得上游授權、或上游補上 LICENSE 前，不建議公開發布或提交到 Comfy Registry。
+> 这个 wrapper 参考并重现了 RUM 公开推理程序中的部分核心逻辑。建立此 wrapper 时，上游 RUM repo 没有附 LICENSE。因此在取得上游授权、或上游补上 LICENSE 前，不建议公开发布或提交到 Comfy Registry。
 >
-> 本 repo 不包含模型檔；模型檔仍遵守各自上游的授權條款。
+> 本 repo 不包含模型文件；模型文件仍遵守各自上游的授权条款。
 
 ## 功能
 
-- 載入 FLUX.2-klein base model。
-- 載入 RUM FLUX.2-klein preview checkpoint。
-- 載入 SDXL text encoder/tokenizer，提供 RUM 額外需要的 CLIP 條件。
-- 從 prompt 直接產生 ComfyUI 標準 `IMAGE` 輸出。
-- 提供 unload node 清除快取中的 RUM pipeline。
+- 加载 FLUX.2-klein base model。
+- 加载 RUM FLUX.2-klein preview checkpoint。
+- 加载 SDXL text encoder/tokenizer，提供 RUM 额外需要的 CLIP 条件。
+- 从 prompt 直接生成 ComfyUI 标准 `IMAGE` 输出。
+- 提供 unload node 清除缓存中的 RUM pipeline。
 
-## 目前限制
+## 当前限制
 
-這版是自包含的 diffusers pipeline 節點，不是原生 ComfyUI sampler stack。
+这一版是自包含的 diffusers pipeline 节点，不是原生 ComfyUI sampler stack。
 
-目前還不支援：
+目前还不支持：
 
-- 輸出可接 KSampler 的 model 物件
-- latent 輸入/輸出工作流
+- 输出可接 KSampler 的 model 对象
+- latent 输入/输出工作流
 - ControlNet / IP-Adapter
-- ComfyUI 原生 LoRA 疊加
-- negative prompt 輸入
+- ComfyUI 原生 LoRA 叠加
+- negative prompt 输入
 
-## 節點
+## 节点
 
 - `RUM FLUX.2-klein Loader`
 - `RUM FLUX.2-klein Sampler`
 - `RUM Unload Models`
 
-## 安裝
+## 安装
 
-把 repo clone 到 ComfyUI 的 `custom_nodes` 目錄：
+把 repo clone 到 ComfyUI 的 `custom_nodes` 目录：
 
 ```bash
 cd ComfyUI/custom_nodes
@@ -220,31 +220,31 @@ cd ComfyUI-RUM
 python -m pip install -r requirements.txt
 ```
 
-然後重啟 ComfyUI。
+然后重启 ComfyUI。
 
-請注意：依賴要安裝到「真正執行 ComfyUI 的 Python 環境」裡。
+请注意：依赖要安装到「真正运行 ComfyUI 的 Python 环境」里。
 
-## 下載模型
+## 下载模型
 
-模型總共大約 24 GB：
+模型总共大约 24 GB：
 
 ```bash
 python scripts/download_models.py --write-local-config
 ```
 
-會下載：
+会下载：
 
-| 用途 | 來源 | 預設資料夾 |
+| 用途 | 来源 | 默认文件夹 |
 | --- | --- | --- |
 | FLUX.2-klein base | `black-forest-labs/FLUX.2-klein-base-4B` | `models/FLUX.2-klein-base-4B` |
 | RUM checkpoint | `rimochan/RUM-FLUX.2-klein-4B-preview` | `models/RUM-FLUX.2-klein-4B-preview` |
 | SDXL text encoders | `Ine007/waiIllustriousSDXL_v160` | `models/waiIllustriousSDXL_v160_text` |
 
-加上 `--write-local-config` 會自動產生 `local_config.json`。這個檔案已被 Git ignore，不會被提交。
+加上 `--write-local-config` 会自动生成 `local_config.json`。这个文件已被 Git ignore，不会被提交。
 
-## 手動設定模型路徑
+## 手动设置模型路径
 
-如果你已經有模型，可以在 `nodes.py` 旁邊建立 `local_config.json`：
+如果你已经有模型，可以在 `nodes.py` 旁边建立 `local_config.json`：
 
 ```json
 {
@@ -254,9 +254,9 @@ python scripts/download_models.py --write-local-config
 }
 ```
 
-你也可以直接在 Loader node 裡貼絕對路徑。
+你也可以直接在 Loader node 里粘贴绝对路径。
 
-也支援環境變數：
+也支持环境变量：
 
 - `RUM_BASE_MODEL_PATH`
 - `RUM_CHECKPOINT_PATH`
@@ -275,7 +275,7 @@ python scripts/download_models.py --write-local-config
 examples/basic_workflow_api.json
 ```
 
-第一次測試建議設定：
+第一次测试建议设置：
 
 ```text
 dtype=bfloat16
@@ -292,52 +292,52 @@ text_encoder_out_layers=10,20,30
 
 如果爆 VRAM，先降低 width / height。
 
-## 檢查安裝
+## 检查安装
 
-用 ComfyUI 實際使用的 Python 執行：
+用 ComfyUI 实际使用的 Python 执行：
 
 ```bash
 python scripts/check_install.py
 ```
 
-它會檢查套件版本、FLUX.2 diffusers 匯入、節點匯入，以及 `local_config.json` 裡的模型路徑。
+它会检查套件版本、FLUX.2 diffusers 导入、节点导入，以及 `local_config.json` 里的模型路径。
 
-## 常見問題
+## 常见问题
 
 ### `No file named model_index.json`
 
-代表 FLUX.2-klein base 資料夾不完整。請執行：
+代表 FLUX.2-klein base 文件夹不完整。请执行：
 
 ```bash
 python scripts/download_models.py --write-local-config
 ```
 
-或確認 `base_model_path` 指向完整的 diffusers 資料夾，裡面要有 `model_index.json`。
+或确认 `base_model_path` 指向完整的 diffusers 文件夹，里面要有 `model_index.json`。
 
 ### `cannot import name Flux2KleinPipeline`
 
-代表 diffusers 版本太舊。請在 ComfyUI 的 Python 環境執行：
+代表 diffusers 版本太旧。请在 ComfyUI 的 Python 环境执行：
 
 ```bash
 python -m pip install --upgrade "diffusers>=0.37.1"
 ```
 
-### CUDA out of memory / 爆顯存
+### CUDA out of memory / 爆显存
 
-可以試：
+可以试：
 
 - 保持 `sdxl_text_device=cpu`
 - 降低 width / height
-- 重啟 ComfyUI
-- 執行 `RUM Unload Models`
+- 重启 ComfyUI
+- 执行 `RUM Unload Models`
 
 ### 第一次生成很慢
 
-正常。第一次會載入 FLUX.2-klein、RUM checkpoint、SDXL text encoders。
+正常。第一次会加载 FLUX.2-klein、RUM checkpoint、SDXL text encoders。
 
-## 致謝
+## 致谢
 
-- RUM 方法與上游推理程式：[RimoChan/RUM](https://github.com/RimoChan/RUM)
+- RUM 方法与上游推理程序：[RimoChan/RUM](https://github.com/RimoChan/RUM)
 - FLUX.2-klein base：`black-forest-labs/FLUX.2-klein-base-4B`
 - RUM preview weights：`rimochan/RUM-FLUX.2-klein-4B-preview`
-- 下載腳本使用的 SDXL text encoder 來源：`Ine007/waiIllustriousSDXL_v160`
+- 下载脚本使用的 SDXL text encoder 来源：`Ine007/waiIllustriousSDXL_v160`
