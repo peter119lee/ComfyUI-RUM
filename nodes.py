@@ -1,226 +1,114 @@
 from __future__ import annotations
 
-import json
-import os
 from pathlib import Path
-from typing import Iterable
-
-import numpy as np
-import torch
-from PIL import Image
 
 
 NODE_DIR = Path(__file__).resolve().parent
 
 
-def _load_local_config() -> dict[str, str]:
-    config_path = NODE_DIR / "local_config.json"
-    if not config_path.exists():
-        return {}
+def _diffusion_model_list():
     try:
-        raw_config = json.loads(config_path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"Invalid JSON in {config_path}") from exc
-    return {str(key): str(value) for key, value in raw_config.items() if value}
+        import folder_paths
+
+        names = folder_paths.get_filename_list("diffusion_models")
+        return names if names else ["put_rum_checkpoint_in_models_diffusion_models.safetensors"]
+    except Exception:
+        return ["put_rum_checkpoint_in_models_diffusion_models.safetensors"]
 
 
-LOCAL_CONFIG = _load_local_config()
-
-
-def _default_path(config_key: str, env_key: str, fallback: str) -> str:
-    for value in (LOCAL_CONFIG.get(config_key), os.getenv(env_key)):
-        if value:
-            return value
-    return str(NODE_DIR / fallback)
-
-
-DEFAULT_BASE_MODEL_PATH = _default_path(
-    "base_model_path",
-    "RUM_BASE_MODEL_PATH",
-    "models/FLUX.2-klein-base-4B",
-)
-DEFAULT_RUM_CHECKPOINT_PATH = _default_path(
-    "rum_checkpoint_path",
-    "RUM_CHECKPOINT_PATH",
-    "models/RUM-FLUX.2-klein-4B-preview/model-checkpoint-608000.safetensors",
-)
-DEFAULT_SDXL_MODEL_PATH = _default_path(
-    "sdxl_model_path",
-    "RUM_SDXL_MODEL_PATH",
-    "models/waiIllustriousSDXL_v160_text",
-)
-
-
-def _parse_layers(raw: str) -> tuple[int, ...]:
-    try:
-        layers = tuple(int(part.strip()) for part in raw.split(",") if part.strip())
-    except ValueError as exc:
-        raise ValueError("text_encoder_out_layers 必须是逗号分隔的整数，例如 10,20,30。") from exc
-    if not layers:
-        raise ValueError("text_encoder_out_layers 不能为空。")
-    return layers
-
-
-def _pil_images_to_comfy(images: Iterable[Image.Image]) -> torch.Tensor:
-    tensors = []
-    for image in images:
-        array = np.asarray(image.convert("RGB"), dtype=np.float32) / 255.0
-        tensors.append(torch.from_numpy(array))
-    if not tensors:
-        raise ValueError("RUM pipeline 没有返回图片。")
-    return torch.stack(tensors, dim=0)
-
-
-class RUMFlux2KleinLoader:
+class RUMFlux2ApplyModelPatch:
     @classmethod
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "base_model_path": (
-                    "STRING",
-                    {
-                        "default": DEFAULT_BASE_MODEL_PATH,
-                        "multiline": False,
-                    },
-                ),
+                "model": ("MODEL",),
+                "rum_checkpoint_name": (_diffusion_model_list(),),
+                "base_text_tokens": ("INT", {"default": 512, "min": 1, "max": 4096, "step": 1}),
+                "strict": ("BOOLEAN", {"default": True}),
+            },
+            "optional": {
                 "rum_checkpoint_path": (
                     "STRING",
                     {
-                        "default": DEFAULT_RUM_CHECKPOINT_PATH,
+                        "default": "",
                         "multiline": False,
+                        "tooltip": "可选：填写绝对路径时会覆盖 rum_checkpoint_name。",
                     },
                 ),
-                "sdxl_model_path": (
-                    "STRING",
-                    {
-                        "default": DEFAULT_SDXL_MODEL_PATH,
-                        "multiline": False,
-                    },
-                ),
-                "dtype": (["bfloat16", "float16", "float32"], {"default": "bfloat16"}),
-                "device": (["auto", "cuda", "cpu"], {"default": "auto"}),
-                "sdxl_text_device": (["cpu", "cuda", "same_as_pipeline"], {"default": "cpu"}),
-                "unload_sdxl_unet_vae": ("BOOLEAN", {"default": True}),
-                "force_reload": ("BOOLEAN", {"default": False}),
-            }
+            },
         }
 
-    RETURN_TYPES = ("RUM_FLUX2_PIPELINE",)
-    RETURN_NAMES = ("pipeline",)
-    FUNCTION = "load"
-    CATEGORY = "RUM/loaders"
+    RETURN_TYPES = ("MODEL", "STRING")
+    RETURN_NAMES = ("model", "status")
+    FUNCTION = "apply_patch"
+    CATEGORY = "RUM/native"
 
-    def load(
-        self,
-        base_model_path: str,
-        rum_checkpoint_path: str,
-        sdxl_model_path: str,
-        dtype: str,
-        device: str,
-        sdxl_text_device: str,
-        unload_sdxl_unet_vae: bool,
-        force_reload: bool,
-    ):
-        from .rum_diffusers import load_rum_pipeline
+    def apply_patch(self, model, rum_checkpoint_name: str, base_text_tokens: int, strict: bool, rum_checkpoint_path: str = ""):
+        import folder_paths
 
-        handle = load_rum_pipeline(
-            base_model_path=base_model_path,
-            rum_checkpoint_path=rum_checkpoint_path,
-            sdxl_model_path=sdxl_model_path,
-            dtype_name=dtype,
-            device=device,
-            sdxl_text_device=sdxl_text_device,
-            unload_sdxl_unet_vae=unload_sdxl_unet_vae,
-            force_reload=force_reload,
+        from .rum_native import apply_rum_model_patch
+
+        checkpoint = rum_checkpoint_path.strip()
+        if not checkpoint:
+            checkpoint = folder_paths.get_full_path_or_raise("diffusion_models", rum_checkpoint_name)
+
+        patched, count, resolved = apply_rum_model_patch(
+            model,
+            checkpoint,
+            base_text_tokens=base_text_tokens,
+            strict=strict,
         )
-        return (handle,)
+        return (patched, f"RUM native patch 已套用：{count} 个权重；checkpoint={resolved}")
 
 
-class RUMFlux2KleinSampler:
+class RUMFlux2CombineConditioning:
     @classmethod
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "pipeline": ("RUM_FLUX2_PIPELINE", {"forceInput": True}),
-                "prompt": (
-                    "STRING",
-                    {
-                        "default": "1girl, kisaki (blue archive), eating baozi, sitting, indoors",
-                        "multiline": True,
-                    },
-                ),
-                "seed": ("INT", {"default": 1, "min": 0, "max": 0xFFFFFFFFFFFFFFFF}),
-                "steps": ("INT", {"default": 20, "min": 1, "max": 100}),
-                "guidance_scale": ("FLOAT", {"default": 5.0, "min": 0.0, "max": 20.0, "step": 0.1}),
-                "width": ("INT", {"default": 960, "min": 64, "max": 4096, "step": 64}),
-                "height": ("INT", {"default": 1024, "min": 64, "max": 4096, "step": 64}),
-                "num_images": ("INT", {"default": 1, "min": 1, "max": 8}),
-                "max_sequence_length": ("INT", {"default": 200, "min": 16, "max": 512, "step": 8}),
-                "text_encoder_out_layers": (
-                    "STRING",
-                    {"default": "10,20,30", "multiline": False},
-                ),
+                "flux2_conditioning": ("CONDITIONING",),
+                "sdxl_conditioning": ("CONDITIONING",),
+                "guidance": ("FLOAT", {"default": 5.0, "min": 0.0, "max": 100.0, "step": 0.1}),
+                "base_text_tokens": ("INT", {"default": 512, "min": 1, "max": 4096, "step": 1}),
+                "extra_text_tokens": ("INT", {"default": 77, "min": 1, "max": 512, "step": 1}),
+                "sdxl_clip_width": ("INT", {"default": 2048, "min": 1, "max": 8192, "step": 1}),
             }
         }
 
-    RETURN_TYPES = ("IMAGE",)
-    RETURN_NAMES = ("images",)
-    FUNCTION = "sample"
-    CATEGORY = "RUM/sampling"
+    RETURN_TYPES = ("CONDITIONING",)
+    RETURN_NAMES = ("conditioning",)
+    FUNCTION = "combine"
+    CATEGORY = "RUM/native"
 
-    def sample(
+    def combine(
         self,
-        pipeline,
-        prompt: str,
-        seed: int,
-        steps: int,
-        guidance_scale: float,
-        width: int,
-        height: int,
-        num_images: int,
-        max_sequence_length: int,
-        text_encoder_out_layers: str,
+        flux2_conditioning,
+        sdxl_conditioning,
+        guidance: float,
+        base_text_tokens: int,
+        extra_text_tokens: int,
+        sdxl_clip_width: int,
     ):
-        layers = _parse_layers(text_encoder_out_layers)
-        images = pipeline.generate(
-            prompt=prompt,
-            seed=seed,
-            steps=steps,
-            guidance_scale=guidance_scale,
-            width=width,
-            height=height,
-            num_images=num_images,
-            max_sequence_length=max_sequence_length,
-            text_encoder_out_layers=layers,
+        from .rum_native import combine_rum_conditioning
+
+        return (
+            combine_rum_conditioning(
+                flux2_conditioning,
+                sdxl_conditioning,
+                guidance=guidance,
+                base_text_tokens=base_text_tokens,
+                extra_text_tokens=extra_text_tokens,
+                sdxl_clip_width=sdxl_clip_width,
+            ),
         )
-        return (_pil_images_to_comfy(images),)
-
-
-class RUMUnloadModels:
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {"required": {}}
-
-    RETURN_TYPES = ("STRING",)
-    RETURN_NAMES = ("status",)
-    FUNCTION = "unload"
-    CATEGORY = "RUM/utils"
-
-    def unload(self):
-        from .rum_diffusers import clear_pipeline_cache
-
-        count = clear_pipeline_cache()
-        return (f"已卸载 {count} 个 RUM pipeline 缓存。",)
 
 
 NODE_CLASS_MAPPINGS = {
-    "RUMFlux2KleinLoader": RUMFlux2KleinLoader,
-    "RUMFlux2KleinSampler": RUMFlux2KleinSampler,
-    "RUMUnloadModels": RUMUnloadModels,
+    "RUMFlux2ApplyModelPatch": RUMFlux2ApplyModelPatch,
+    "RUMFlux2CombineConditioning": RUMFlux2CombineConditioning,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "RUMFlux2KleinLoader": "RUM FLUX.2-klein Loader",
-    "RUMFlux2KleinSampler": "RUM FLUX.2-klein Sampler",
-    "RUMUnloadModels": "RUM Unload Models",
+    "RUMFlux2ApplyModelPatch": "RUM FLUX.2 Apply Model Patch",
+    "RUMFlux2CombineConditioning": "RUM FLUX.2 Combine Conditioning",
 }

@@ -1,44 +1,53 @@
 # ComfyUI-RUM
 
-ComfyUI nodes for running [RimoChan/RUM](https://github.com/RimoChan/RUM)'s `RUM-FLUX.2-klein-4B-preview` checkpoint inside ComfyUI.
+Native ComfyUI adapter nodes for [RimoChan/RUM](https://github.com/RimoChan/RUM) `RUM-FLUX.2-klein-4B-preview`.
 
-RUM transfers anime-generation behavior from an SDXL teacher model into newer model architectures. This custom node wraps the upstream diffusers inference path and adds the extra SDXL CLIP conditioning branch required by the RUM FLUX.2-klein checkpoint.
+This main branch is **native ComfyUI mode**: it keeps ComfyUI's normal `MODEL`, `CONDITIONING`, `LATENT`, `KSampler`, and `VAE Decode` workflow, then adds only the RUM-specific adapter pieces.
 
-> **License / permission warning**
+The older self-contained diffusers pipeline version is kept in the [`diffusers-pipeline`](https://github.com/peter119lee/ComfyUI-RUM/tree/diffusers-pipeline) branch.
+
+> **License / publishing warning**
 >
-> This wrapper mirrors parts of the public RUM inference implementation. The upstream RUM repository did not include a license when this wrapper was created. Keep this repository private or treat public redistribution as pending upstream permission unless a license is added or permission is granted.
+> This wrapper references and adapts behavior from RUM's public inference code. At the time this project was created, upstream `RimoChan/RUM` did not include a clear LICENSE. Do not publish to Comfy Registry or make broad public claims unless upstream permission/license is clarified.
 >
-> Model files are not included and remain under their own upstream licenses.
+> This repository does not include model weights. Each model file follows its own upstream license and access rules.
 
-## Features
+## What It Does
 
-- Loads the FLUX.2-klein base model.
-- Loads the RUM FLUX.2-klein preview checkpoint.
-- Loads SDXL text encoders/tokenizers for RUM's extra CLIP branch.
-- Generates standard ComfyUI `IMAGE` output.
-- Includes an unload node for clearing cached RUM pipelines.
+RUM adds one extra SDXL CLIP conditioning route to FLUX.2-Klein. Normal ComfyUI FLUX.2 nodes do not know how to feed that extra route into the transformer, so this custom node pack provides:
 
-## Limitations
+- `RUM FLUX.2 Apply Model Patch`: patches a normal ComfyUI FLUX.2-Klein `MODEL` with RUM weights and a dual text projection layer.
+- `RUM FLUX.2 Combine Conditioning`: combines FLUX.2-Klein text conditioning with SDXL CLIP conditioning into the format RUM expects.
 
-This is currently a self-contained diffusers pipeline node, not a native ComfyUI sampler stack.
+After those two nodes, the rest is normal ComfyUI: `KSampler`, `Empty Flux 2 Latent`, `VAE Decode`, `Save Image`, etc.
 
-Not supported yet:
+## Why Not Only Diffusers?
 
-- KSampler-compatible model output
-- latent input/output workflows
-- ControlNet / IP-Adapter
-- ComfyUI LoRA stacking
-- negative prompt input
+The diffusers branch works, but it behaves like a separate mini pipeline inside ComfyUI. Native mode is better for ComfyUI users because:
 
-## Nodes
+- models live in normal ComfyUI folders
+- workflows use normal sampler/latent/VAE nodes
+- ComfyUI can manage model loading/offloading
+- future LoRA, ControlNet, scheduler, and workflow compatibility is more realistic
 
-- `RUM FLUX.2-klein Loader`
-- `RUM FLUX.2-klein Sampler`
-- `RUM Unload Models`
+## Required Models
 
-## Installation
+Put files in the usual ComfyUI model folders:
 
-Clone into ComfyUI's `custom_nodes` directory:
+| Purpose | Example file | ComfyUI folder |
+| --- | --- | --- |
+| FLUX.2-Klein base diffusion model | `flux-2-klein/flux-2-klein-4b-fp8.safetensors` | `models/diffusion_models` |
+| RUM checkpoint | `rum-flux2-klein-4b-preview.safetensors` | `models/diffusion_models` |
+| FLUX.2-Klein text encoder | `qwen_3_4b.safetensors` | `models/text_encoders` |
+| SDXL CLIP-L | `clip_l.safetensors` | `models/text_encoders` or `models/clip` |
+| SDXL CLIP-G | `clip_g.safetensors` | `models/text_encoders` or `models/clip` |
+| FLUX.2 VAE | `flux2-vae.safetensors` | `models/vae` |
+
+If you already have an SDXL checkpoint loader workflow that outputs SDXL `CLIP`, you can use that CLIP instead of separate `clip_l` / `clip_g` files.
+
+## Install
+
+Clone into ComfyUI custom nodes:
 
 ```bash
 cd ComfyUI/custom_nodes
@@ -49,52 +58,38 @@ python -m pip install -r requirements.txt
 
 Restart ComfyUI.
 
-Install dependencies into the same Python environment that runs ComfyUI.
+## Download Helper
 
-## Download Models
-
-The helper downloads about 24 GB of required files:
+From this custom node folder:
 
 ```bash
-python scripts/download_models.py --write-local-config
+python scripts/download_models.py
 ```
 
-Downloaded sources:
+To also try downloading `clip_l.safetensors` and `clip_g.safetensors`:
 
-| Purpose | Source | Default folder |
-| --- | --- | --- |
-| FLUX.2-klein base | `black-forest-labs/FLUX.2-klein-base-4B` | `models/FLUX.2-klein-base-4B` |
-| RUM checkpoint | `rimochan/RUM-FLUX.2-klein-4B-preview` | `models/RUM-FLUX.2-klein-4B-preview` |
-| SDXL text encoders | `Ine007/waiIllustriousSDXL_v160` | `models/waiIllustriousSDXL_v160_text` |
-
-`--write-local-config` creates `local_config.json`, which is ignored by Git.
-
-## Manual Configuration
-
-If you already have the models, create `local_config.json` next to `nodes.py`:
-
-```json
-{
-  "base_model_path": "models/FLUX.2-klein-base-4B",
-  "rum_checkpoint_path": "models/RUM-FLUX.2-klein-4B-preview/model-checkpoint-608000.safetensors",
-  "sdxl_model_path": "models/waiIllustriousSDXL_v160_text"
-}
+```bash
+python scripts/download_models.py --include-sdxl-clip
 ```
 
-You can also paste absolute paths directly into the loader node.
+If Hugging Face requires authentication for any file:
 
-Environment variables are also supported:
-
-- `RUM_BASE_MODEL_PATH`
-- `RUM_CHECKPOINT_PATH`
-- `RUM_SDXL_MODEL_PATH`
+```bash
+python scripts/download_models.py --token YOUR_HF_TOKEN
+```
 
 ## Basic Workflow
 
-1. Add `RUM FLUX.2-klein Loader`.
-2. Add `RUM FLUX.2-klein Sampler`.
-3. Connect `pipeline` from the loader to the sampler.
-4. Connect sampler `images` to `Preview Image` or `Save Image`.
+Recommended native graph:
+
+1. `Load Diffusion Model` loads `flux-2-klein/flux-2-klein-4b-fp8.safetensors`.
+2. `RUM FLUX.2 Apply Model Patch` patches that model with the RUM checkpoint.
+3. `Load CLIP` loads `qwen_3_4b.safetensors` with `type=flux2`.
+4. `DualCLIPLoader` loads `clip_l.safetensors` + `clip_g.safetensors` with `type=sdxl`.
+5. Encode the same positive prompt with both CLIP paths.
+6. Use `RUM FLUX.2 Combine Conditioning` for positive conditioning.
+7. Repeat empty or negative prompt conditioning for negative.
+8. Use normal `Empty Flux 2 Latent` → `KSampler` → `VAE Decode` → `Save Image`.
 
 A minimal API workflow is available at:
 
@@ -102,116 +97,128 @@ A minimal API workflow is available at:
 examples/basic_workflow_api.json
 ```
 
-Recommended first test settings:
+Recommended first settings:
 
 ```text
-dtype=bfloat16
-device=auto
-sdxl_text_device=cpu
-unload_sdxl_unet_vae=true
+base_text_tokens=512
+extra_text_tokens=77
+sdxl_clip_width=2048
+guidance=5.0
+KSampler cfg=1.0
 steps=20
-guidance_scale=5
 width=960
 height=1024
-max_sequence_length=200
-text_encoder_out_layers=10,20,30
 ```
 
-If VRAM is tight, reduce width and height first.
+## Verification
 
-## Verify Installation
-
-Run with the Python environment used by ComfyUI:
+Run with the same Python environment used by ComfyUI:
 
 ```bash
 python scripts/check_install.py
 ```
 
-This checks package versions, FLUX.2 diffusers imports, node imports, and optional model paths in `local_config.json`.
+This checks node imports and whether ComfyUI can see files in `diffusion_models`, `text_encoders`, and `vae`.
+
+## Current Limitations
+
+Native mode is still experimental.
+
+Known limitations:
+
+- The RUM patch node expects a FLUX.2-Klein 4B-compatible base model.
+- `base_text_tokens` must match the FLUX.2 text conditioning length; normal ComfyUI FLUX.2-Klein uses `512`.
+- LoRA and ControlNet compatibility has not been validated yet.
+- The example uses a basic `KSampler`; more accurate FLUX.2 scheduler workflows may still need tuning.
 
 ## Troubleshooting
 
-### `No file named model_index.json`
+### RUM checkpoint does not appear in the dropdown
 
-Your FLUX.2-klein folder is incomplete. Run:
+Put the RUM `.safetensors` file in:
 
-```bash
-python scripts/download_models.py --write-local-config
+```text
+ComfyUI/models/diffusion_models
 ```
 
-or point `base_model_path` to a complete diffusers folder containing `model_index.json`.
+Then restart ComfyUI or refresh model lists.
 
-### `cannot import name Flux2KleinPipeline`
+You can also paste an absolute path into `rum_checkpoint_path` on `RUM FLUX.2 Apply Model Patch`.
 
-Upgrade diffusers in ComfyUI's Python environment:
+### Shape mismatch in strict mode
 
-```bash
-python -m pip install --upgrade "diffusers>=0.37.1"
-```
+You probably loaded the wrong base model. Use a FLUX.2-Klein 4B base model. If you know what you are doing, set `strict=false`, but bad outputs are likely.
+
+### SDXL conditioning dimension looks wrong
+
+Use SDXL CLIP-L + CLIP-G together through `DualCLIPLoader type=sdxl`. The expected combined SDXL width is `2048`.
 
 ### CUDA out of memory
 
 Try:
 
-- keep `sdxl_text_device=cpu`
 - lower width and height
-- restart ComfyUI
-- run `RUM Unload Models`
-
-### Slow first run
-
-Expected. The first run loads FLUX.2-klein, the RUM checkpoint, and SDXL text encoders.
+- keep text encoders on CPU if your ComfyUI build allows it
+- close other loaded models
+- restart ComfyUI after changing large models
 
 ## Credits
 
 - RUM method and upstream inference scripts: [RimoChan/RUM](https://github.com/RimoChan/RUM)
-- FLUX.2-klein base: `black-forest-labs/FLUX.2-klein-base-4B`
+- FLUX.2-Klein base: `black-forest-labs/FLUX.2-klein-base-4b-fp8`
 - RUM preview weights: `rimochan/RUM-FLUX.2-klein-4B-preview`
-- SDXL text encoder source used by the helper: `Ine007/waiIllustriousSDXL_v160`
+- ComfyUI native FLUX.2 support: ComfyUI core
 
 ---
 
 # 简体中文说明
 
-这是一组 ComfyUI 自定义节点，用来在 ComfyUI 里运行 [RimoChan/RUM](https://github.com/RimoChan/RUM) 的 `RUM-FLUX.2-klein-4B-preview` 模型。
+这是给 [RimoChan/RUM](https://github.com/RimoChan/RUM) 的 `RUM-FLUX.2-klein-4B-preview` 做的 ComfyUI 原生适配节点。
 
-RUM 的概念是把 SDXL 动漫模型的能力，蒸馏/转移到更新的模型架构上。这个节点包装了上游 diffusers 推理流程，并补上 RUM FLUX.2-klein 权重需要的额外 SDXL CLIP 条件分支。
+主分支现在是 **Native ComfyUI 模式**：模型、conditioning、latent、KSampler、VAE Decode 都尽量走 ComfyUI 原生系统。旧的 diffusers 一体式版本已经放到 [`diffusers-pipeline`](https://github.com/peter119lee/ComfyUI-RUM/tree/diffusers-pipeline) 分支。
 
-> **授权 / 权限提醒**
+> **授权提醒**
 >
-> 这个 wrapper 参考并重现了 RUM 公开推理程序中的部分核心逻辑。建立此 wrapper 时，上游 RUM repo 没有附 LICENSE。因此在取得上游授权、或上游补上 LICENSE 前，不建议公开发布或提交到 Comfy Registry。
+> 这个项目参考并适配了 RUM 公开推理代码的行为。创建这个项目时，上游 `RimoChan/RUM` 没有明确 LICENSE。除非上游补 LICENSE 或明确授权，否则不建议提交到 Comfy Registry 或大范围公开发布。
 >
-> 本 repo 不包含模型文件；模型文件仍遵守各自上游的授权条款。
+> 本 repo 不包含模型权重；模型文件遵守各自上游授权。
 
-## 功能
+## 它解决什么问题
 
-- 加载 FLUX.2-klein base model。
-- 加载 RUM FLUX.2-klein preview checkpoint。
-- 加载 SDXL text encoder/tokenizer，提供 RUM 额外需要的 CLIP 条件。
-- 从 prompt 直接生成 ComfyUI 标准 `IMAGE` 输出。
-- 提供 unload node 清除缓存中的 RUM pipeline。
+RUM 在 FLUX.2-Klein 上额外加了一路 SDXL CLIP 条件。普通 ComfyUI 的 FLUX.2-Klein 节点不知道怎么把这一路喂进 transformer，所以作者才说“ComfyUI 跑不了了，只能用 diffusers”。
 
-## 当前限制
+这个 custom node pack 补的就是这块：
 
-这一版是自包含的 diffusers pipeline 节点，不是原生 ComfyUI sampler stack。
+- `RUM FLUX.2 Apply Model Patch`：把普通 ComfyUI FLUX.2-Klein `MODEL` patch 成 RUM 需要的模型。
+- `RUM FLUX.2 Combine Conditioning`：把 FLUX.2-Klein 文本特征和 SDXL CLIP 文本特征拼成 RUM 需要的 conditioning。
 
-目前还不支持：
+后面继续用普通 ComfyUI 节点：`KSampler`、`Empty Flux 2 Latent`、`VAE Decode`、`Save Image`。
 
-- 输出可接 KSampler 的 model 对象
-- latent 输入/输出工作流
-- ControlNet / IP-Adapter
-- ComfyUI 原生 LoRA 叠加
-- negative prompt 输入
+## 为什么不用 diffusers 版就好
 
-## 节点
+diffusers 版能跑，但它更像在 ComfyUI 里面塞了一个外部 pipeline。Native 版更像真正 ComfyUI 节点：
 
-- `RUM FLUX.2-klein Loader`
-- `RUM FLUX.2-klein Sampler`
-- `RUM Unload Models`
+- 模型放正常 ComfyUI 模型目录
+- workflow 更接近普通 ComfyUI 用法
+- ComfyUI 可以管理模型加载和卸载
+- 以后接 LoRA、ControlNet、调度器、工作流会更现实
+
+## 需要的模型
+
+把文件放到正常 ComfyUI 模型目录：
+
+| 用途 | 示例文件 | ComfyUI 文件夹 |
+| --- | --- | --- |
+| FLUX.2-Klein base | `flux-2-klein/flux-2-klein-4b-fp8.safetensors` | `models/diffusion_models` |
+| RUM checkpoint | `rum-flux2-klein-4b-preview.safetensors` | `models/diffusion_models` |
+| FLUX.2-Klein 文本编码器 | `qwen_3_4b.safetensors` | `models/text_encoders` |
+| SDXL CLIP-L | `clip_l.safetensors` | `models/text_encoders` 或 `models/clip` |
+| SDXL CLIP-G | `clip_g.safetensors` | `models/text_encoders` 或 `models/clip` |
+| FLUX.2 VAE | `flux2-vae.safetensors` | `models/vae` |
+
+如果你本来就有 SDXL checkpoint loader 工作流，可以直接用那个 loader 输出的 SDXL `CLIP`，不一定要单独的 `clip_l` / `clip_g` 文件。
 
 ## 安装
-
-把 repo clone 到 ComfyUI 的 `custom_nodes` 目录：
 
 ```bash
 cd ComfyUI/custom_nodes
@@ -222,122 +229,106 @@ python -m pip install -r requirements.txt
 
 然后重启 ComfyUI。
 
-请注意：依赖要安装到「真正运行 ComfyUI 的 Python 环境」里。
-
 ## 下载模型
 
-模型总共大约 24 GB：
+在这个 custom node 文件夹运行：
 
 ```bash
-python scripts/download_models.py --write-local-config
+python scripts/download_models.py
 ```
 
-会下载：
+如果也想尝试下载 SDXL 的 `clip_l.safetensors` 和 `clip_g.safetensors`：
 
-| 用途 | 来源 | 默认文件夹 |
-| --- | --- | --- |
-| FLUX.2-klein base | `black-forest-labs/FLUX.2-klein-base-4B` | `models/FLUX.2-klein-base-4B` |
-| RUM checkpoint | `rimochan/RUM-FLUX.2-klein-4B-preview` | `models/RUM-FLUX.2-klein-4B-preview` |
-| SDXL text encoders | `Ine007/waiIllustriousSDXL_v160` | `models/waiIllustriousSDXL_v160_text` |
-
-加上 `--write-local-config` 会自动生成 `local_config.json`。这个文件已被 Git ignore，不会被提交。
-
-## 手动设置模型路径
-
-如果你已经有模型，可以在 `nodes.py` 旁边建立 `local_config.json`：
-
-```json
-{
-  "base_model_path": "models/FLUX.2-klein-base-4B",
-  "rum_checkpoint_path": "models/RUM-FLUX.2-klein-4B-preview/model-checkpoint-608000.safetensors",
-  "sdxl_model_path": "models/waiIllustriousSDXL_v160_text"
-}
+```bash
+python scripts/download_models.py --include-sdxl-clip
 ```
 
-你也可以直接在 Loader node 里粘贴绝对路径。
+如果 Hugging Face 要 token：
 
-也支持环境变量：
+```bash
+python scripts/download_models.py --token YOUR_HF_TOKEN
+```
 
-- `RUM_BASE_MODEL_PATH`
-- `RUM_CHECKPOINT_PATH`
-- `RUM_SDXL_MODEL_PATH`
+## 基础工作流
 
-## 基本工作流
+推荐节点顺序：
 
-1. 新增 `RUM FLUX.2-klein Loader`。
-2. 新增 `RUM FLUX.2-klein Sampler`。
-3. 把 Loader 的 `pipeline` 接到 Sampler。
-4. 把 Sampler 的 `images` 接到 `Preview Image` 或 `Save Image`。
+1. `Load Diffusion Model` 载入 `flux-2-klein/flux-2-klein-4b-fp8.safetensors`。
+2. `RUM FLUX.2 Apply Model Patch` 选择 RUM checkpoint。
+3. `Load CLIP` 载入 `qwen_3_4b.safetensors`，`type=flux2`。
+4. `DualCLIPLoader` 载入 `clip_l.safetensors` + `clip_g.safetensors`，`type=sdxl`。
+5. 同一个正向 prompt 分别用 FLUX2 CLIP 和 SDXL CLIP encode。
+6. 用 `RUM FLUX.2 Combine Conditioning` 合并正向 conditioning。
+7. 负向 conditioning 也重复一次，可以用空 prompt。
+8. 后面接正常 `Empty Flux 2 Latent` → `KSampler` → `VAE Decode` → `Save Image`。
 
-最小 API workflow 在：
+示例 API workflow：
 
 ```text
 examples/basic_workflow_api.json
 ```
 
-第一次测试建议设置：
+推荐初始参数：
 
 ```text
-dtype=bfloat16
-device=auto
-sdxl_text_device=cpu
-unload_sdxl_unet_vae=true
+base_text_tokens=512
+extra_text_tokens=77
+sdxl_clip_width=2048
+guidance=5.0
+KSampler cfg=1.0
 steps=20
-guidance_scale=5
 width=960
 height=1024
-max_sequence_length=200
-text_encoder_out_layers=10,20,30
 ```
 
-如果爆 VRAM，先降低 width / height。
+## 验证安装
 
-## 检查安装
-
-用 ComfyUI 实际使用的 Python 执行：
+用 ComfyUI 同一个 Python 环境运行：
 
 ```bash
 python scripts/check_install.py
 ```
 
-它会检查套件版本、FLUX.2 diffusers 导入、节点导入，以及 `local_config.json` 里的模型路径。
+它会检查节点 import，以及 ComfyUI 是否看得到 `diffusion_models`、`text_encoders`、`vae` 里的文件。
+
+## 当前限制
+
+直接说：这个 native 版还是 experimental。
+
+目前限制：
+
+- RUM patch node 需要 FLUX.2-Klein 4B 兼容底模。
+- `base_text_tokens` 要和 FLUX.2 文本 conditioning 长度一致；普通 ComfyUI FLUX.2-Klein 通常是 `512`。
+- LoRA / ControlNet 兼容性还没验证。
+- 示例先用基础 `KSampler`，更准确的 FLUX.2 scheduler workflow 之后还可以继续调。
 
 ## 常见问题
 
-### `No file named model_index.json`
+### 下拉列表看不到 RUM checkpoint
 
-代表 FLUX.2-klein base 文件夹不完整。请执行：
+把 RUM `.safetensors` 放到：
 
-```bash
-python scripts/download_models.py --write-local-config
+```text
+ComfyUI/models/diffusion_models
 ```
 
-或确认 `base_model_path` 指向完整的 diffusers 文件夹，里面要有 `model_index.json`。
+然后重启 ComfyUI 或刷新模型列表。
 
-### `cannot import name Flux2KleinPipeline`
+也可以直接在 `RUM FLUX.2 Apply Model Patch` 的 `rum_checkpoint_path` 里填绝对路径。
 
-代表 diffusers 版本太旧。请在 ComfyUI 的 Python 环境执行：
+### strict mode 报 shape mismatch
 
-```bash
-python -m pip install --upgrade "diffusers>=0.37.1"
-```
+大概率是底模选错了。请用 FLUX.2-Klein 4B base。你可以关掉 `strict`，但很可能出烂图。
 
-### CUDA out of memory / 爆显存
+### SDXL conditioning 维度不对
 
-可以试：
+请用 `DualCLIPLoader type=sdxl` 同时加载 CLIP-L 和 CLIP-G。RUM 预期 SDXL CLIP 合并宽度是 `2048`。
 
-- 保持 `sdxl_text_device=cpu`
-- 降低 width / height
-- 重启 ComfyUI
-- 执行 `RUM Unload Models`
+### 爆显存
 
-### 第一次生成很慢
+先试：
 
-正常。第一次会加载 FLUX.2-klein、RUM checkpoint、SDXL text encoders。
-
-## 致谢
-
-- RUM 方法与上游推理程序：[RimoChan/RUM](https://github.com/RimoChan/RUM)
-- FLUX.2-klein base：`black-forest-labs/FLUX.2-klein-base-4B`
-- RUM preview weights：`rimochan/RUM-FLUX.2-klein-4B-preview`
-- 下载脚本使用的 SDXL text encoder 来源：`Ine007/waiIllustriousSDXL_v160`
+- 降低宽高
+- 文本编码器尽量放 CPU
+- 关掉其他大模型
+- 换模型后重启 ComfyUI

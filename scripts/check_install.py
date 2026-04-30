@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+import argparse
 import importlib.util
-import json
 import sys
 from pathlib import Path
 
@@ -9,7 +9,21 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def load_node_module():
+def parse_args() -> argparse.Namespace:
+    default_comfy_root = ROOT.parent.parent
+    parser = argparse.ArgumentParser(description="Check a ComfyUI-RUM native installation.")
+    parser.add_argument(
+        "--comfy-root",
+        type=Path,
+        default=default_comfy_root,
+        help="ComfyUI root directory. Default: inferred from custom_nodes/ComfyUI-RUM/scripts.",
+    )
+    return parser.parse_args()
+
+
+def load_node_module(comfy_root: Path):
+    if str(comfy_root) not in sys.path:
+        sys.path.insert(0, str(comfy_root))
     spec = importlib.util.spec_from_file_location(
         "ComfyUI_RUM_check",
         ROOT / "__init__.py",
@@ -24,26 +38,26 @@ def load_node_module():
 
 
 def main() -> int:
+    args = parse_args()
+    comfy_root = args.comfy_root.expanduser().resolve()
     print(f"Checking ComfyUI-RUM at: {ROOT}")
-    for package in ("torch", "diffusers", "transformers", "safetensors", "numpy", "PIL"):
+    print(f"ComfyUI root: {comfy_root}")
+    for package in ("torch", "safetensors"):
         module = __import__(package)
         print(f"{package}: {getattr(module, '__version__', 'ok')}")
 
-    from diffusers import Flux2KleinPipeline  # noqa: F401
-    from diffusers.models.transformers.transformer_flux2 import Flux2Transformer2DModel  # noqa: F401
-    print("Flux2 diffusers imports: OK")
-
-    module = load_node_module()
+    module = load_node_module(comfy_root)
     print("Node classes:", ", ".join(sorted(module.NODE_CLASS_MAPPINGS)))
 
-    config_path = ROOT / "local_config.json"
-    if config_path.exists():
-        config = json.loads(config_path.read_text(encoding="utf-8"))
-        for key in ("base_model_path", "rum_checkpoint_path", "sdxl_model_path"):
-            value = Path(config.get(key, ""))
-            print(f"{key}: {'OK' if value.exists() else 'MISSING'} {value}")
-    else:
-        print("local_config.json: not found; node will use built-in defaults or manually entered paths.")
+    import folder_paths
+
+    for folder_name in ("diffusion_models", "text_encoders", "vae"):
+        try:
+            names = folder_paths.get_filename_list(folder_name)
+        except Exception as exc:
+            print(f"{folder_name}: ERROR {exc}")
+            continue
+        print(f"{folder_name}: {len(names)} file(s) visible to ComfyUI")
 
     return 0
 

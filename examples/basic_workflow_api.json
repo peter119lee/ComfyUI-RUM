@@ -1,37 +1,129 @@
 {
   "1": {
-    "class_type": "RUMFlux2KleinLoader",
+    "class_type": "UNETLoader",
     "inputs": {
-      "base_model_path": "models/FLUX.2-klein-base-4B",
-      "rum_checkpoint_path": "models/RUM-FLUX.2-klein-4B-preview/model-checkpoint-608000.safetensors",
-      "sdxl_model_path": "models/waiIllustriousSDXL_v160_text",
-      "dtype": "bfloat16",
-      "device": "auto",
-      "sdxl_text_device": "cpu",
-      "unload_sdxl_unet_vae": true,
-      "force_reload": false
+      "unet_name": "flux-2-klein/flux-2-klein-4b-fp8.safetensors",
+      "weight_dtype": "default"
     }
   },
   "2": {
-    "class_type": "RUMFlux2KleinSampler",
+    "class_type": "RUMFlux2ApplyModelPatch",
     "inputs": {
-      "pipeline": ["1", 0],
-      "prompt": "1girl, kisaki (blue archive), eating baozi, sitting, indoors",
-      "seed": 1,
-      "steps": 20,
-      "guidance_scale": 5.0,
-      "width": 960,
-      "height": 1024,
-      "num_images": 1,
-      "max_sequence_length": 200,
-      "text_encoder_out_layers": "10,20,30"
+      "model": ["1", 0],
+      "rum_checkpoint_name": "rum-flux2-klein-4b-preview.safetensors",
+      "base_text_tokens": 512,
+      "strict": true,
+      "rum_checkpoint_path": ""
     }
   },
   "3": {
+    "class_type": "CLIPLoader",
+    "inputs": {
+      "clip_name": "qwen_3_4b.safetensors",
+      "type": "flux2",
+      "device": "default"
+    }
+  },
+  "4": {
+    "class_type": "DualCLIPLoader",
+    "inputs": {
+      "clip_name1": "clip_l.safetensors",
+      "clip_name2": "clip_g.safetensors",
+      "type": "sdxl",
+      "device": "default"
+    }
+  },
+  "5": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "clip": ["3", 0],
+      "text": "1girl, kisaki (blue archive), eating baozi, sitting, indoors"
+    }
+  },
+  "6": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "clip": ["4", 0],
+      "text": "1girl, kisaki (blue archive), eating baozi, sitting, indoors"
+    }
+  },
+  "7": {
+    "class_type": "RUMFlux2CombineConditioning",
+    "inputs": {
+      "flux2_conditioning": ["5", 0],
+      "sdxl_conditioning": ["6", 0],
+      "guidance": 5.0,
+      "base_text_tokens": 512,
+      "extra_text_tokens": 77,
+      "sdxl_clip_width": 2048
+    }
+  },
+  "8": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "clip": ["3", 0],
+      "text": ""
+    }
+  },
+  "9": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "clip": ["4", 0],
+      "text": ""
+    }
+  },
+  "10": {
+    "class_type": "RUMFlux2CombineConditioning",
+    "inputs": {
+      "flux2_conditioning": ["8", 0],
+      "sdxl_conditioning": ["9", 0],
+      "guidance": 5.0,
+      "base_text_tokens": 512,
+      "extra_text_tokens": 77,
+      "sdxl_clip_width": 2048
+    }
+  },
+  "11": {
+    "class_type": "EmptyFlux2LatentImage",
+    "inputs": {
+      "width": 960,
+      "height": 1024,
+      "batch_size": 1
+    }
+  },
+  "12": {
+    "class_type": "KSampler",
+    "inputs": {
+      "model": ["2", 0],
+      "seed": 1,
+      "steps": 20,
+      "cfg": 1.0,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "positive": ["7", 0],
+      "negative": ["10", 0],
+      "latent_image": ["11", 0],
+      "denoise": 1.0
+    }
+  },
+  "13": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "flux2-vae.safetensors"
+    }
+  },
+  "14": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": ["12", 0],
+      "vae": ["13", 0]
+    }
+  },
+  "15": {
     "class_type": "SaveImage",
     "inputs": {
-      "filename_prefix": "RUM",
-      "images": ["2", 0]
+      "filename_prefix": "RUM_native",
+      "images": ["14", 0]
     }
   }
 }

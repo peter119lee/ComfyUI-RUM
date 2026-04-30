@@ -1,5 +1,3 @@
 {
-  "base_model_path": "models/FLUX.2-klein-base-4B",
-  "rum_checkpoint_path": "models/RUM-FLUX.2-klein-4B-preview/model-checkpoint-608000.safetensors",
-  "sdxl_model_path": "models/waiIllustriousSDXL_v160_text"
+  "note": "Native main branch does not use local_config.json. Put models in ComfyUI/models and select them in the normal loader nodes. The older diffusers-pipeline branch used local_config.json."
 }
