@@ -4,6 +4,10 @@
 
 主分支是 **native ComfyUI 版**：模型加载、conditioning、latent、sampler、VAE decode 都尽量走 ComfyUI 自己的系统；旧的 diffusers 一体式版本保留在 [`diffusers-pipeline`](https://github.com/peter119lee/ComfyUI-RUM/tree/diffusers-pipeline) 分支。
 
+> **AI 编写说明**
+>
+> 这个 ComfyUI 适配仓库的代码与 README 由 Codex 5.5 编写和整理；RUM 原始项目、模型和参考推理代码仍来自 [RimoChan/RUM](https://github.com/RimoChan/RUM)。
+
 > **授权提醒**
 >
 > 这个项目参考并适配了 RUM 公开推理代码的行为。创建本项目时，上游 `RimoChan/RUM` 没有明确 LICENSE。除非上游补 LICENSE 或明确授权，否则不建议提交到 Comfy Registry 或做大范围公开分发。
@@ -305,6 +309,10 @@ FLUX.2-Klein 4B 加 Qwen3 4B 文本编码器很吃显存。建议：
 This is a **native ComfyUI node adapter** for [RimoChan/RUM](https://github.com/RimoChan/RUM), targeting `RUM-FLUX.2-klein-4B-preview`. The original RUM idea, model, and reference inference code come from RimoChan's project.
 
 The `main` branch is the **native ComfyUI version**: model loading, conditioning, latent creation, sampling, VAE decode, and image saving are routed through ComfyUI systems as much as possible. The old all-in-one diffusers wrapper is kept on the [`diffusers-pipeline`](https://github.com/peter119lee/ComfyUI-RUM/tree/diffusers-pipeline) branch.
+
+> **AI Writing Notice**
+>
+> The adapter code and README in this ComfyUI repository were written and organized by Codex 5.5; the original RUM project, model, and reference inference code still come from [RimoChan/RUM](https://github.com/RimoChan/RUM).
 
 > **License Notice**
 >
