@@ -1,6 +1,6 @@
 # ComfyUI-RUM
 
-这是给 [RimoChan/RUM](https://github.com/RimoChan/RUM) 的 **ComfyUI 原生节点适配器**，目标模型是 `RUM-FLUX.2-klein-4B-preview`。
+这是给 [RimoChan/RUM](https://github.com/RimoChan/RUM) 的 **ComfyUI 原生节点适配器**，目标模型是 `RUM-FLUX.2-klein-4B-preview`。RUM 的原始想法、模型和参考推理代码都来自 RimoChan 的项目。
 
 主分支是 **native ComfyUI 版**：模型加载、conditioning、latent、sampler、VAE decode 都尽量走 ComfyUI 自己的系统；旧的 diffusers 一体式版本保留在 [`diffusers-pipeline`](https://github.com/peter119lee/ComfyUI-RUM/tree/diffusers-pipeline) 分支。
 
@@ -293,7 +293,7 @@ FLUX.2-Klein 4B 加 Qwen3 4B 文本编码器很吃显存。建议：
 - 关掉其它已加载模型。
 - 改模型后重启 ComfyUI。
 
-## Credits
+## 特别感谢
 
-- RUM / original research code: [RimoChan/RUM](https://github.com/RimoChan/RUM)
-- ComfyUI: [comfyanonymous/ComfyUI](https://github.com/comfyanonymous/ComfyUI)
+- **RimoChan / RUM**：原始 RUM 项目、模型与参考推理代码来自 [RimoChan/RUM](https://github.com/RimoChan/RUM)。没有这个项目，就没有这个 ComfyUI 适配。
+- **ComfyUI**：节点系统和 native workflow 基础来自 [comfyanonymous/ComfyUI](https://github.com/comfyanonymous/ComfyUI)。
