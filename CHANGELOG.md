@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.1
+
+- Updated the recommended native workflow to use `Flux2Scheduler` + `SamplerCustomAdvanced` instead of plain `KSampler scheduler=simple`.
+- Documented the noisy/glitched image failure mode caused by the wrong FLUX.2 sampling chain.
+
 ## 0.2.0
 
 - Switched `main` to native ComfyUI adapter mode.

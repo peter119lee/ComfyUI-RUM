@@ -2,7 +2,7 @@
 
 Native ComfyUI adapter nodes for [RimoChan/RUM](https://github.com/RimoChan/RUM) `RUM-FLUX.2-klein-4B-preview`.
 
-This main branch is **native ComfyUI mode**: it keeps ComfyUI's normal `MODEL`, `CONDITIONING`, `LATENT`, `KSampler`, and `VAE Decode` workflow, then adds only the RUM-specific adapter pieces.
+This main branch is **native ComfyUI mode**: it keeps ComfyUI's normal `MODEL`, `CONDITIONING`, `LATENT`, custom sampling, and `VAE Decode` workflow, then adds only the RUM-specific adapter pieces.
 
 The older self-contained diffusers pipeline version is kept in the [`diffusers-pipeline`](https://github.com/peter119lee/ComfyUI-RUM/tree/diffusers-pipeline) branch.
 
@@ -19,7 +19,7 @@ RUM adds one extra SDXL CLIP conditioning route to FLUX.2-Klein. Normal ComfyUI 
 - `RUM FLUX.2 Apply Model Patch`: patches a normal ComfyUI FLUX.2-Klein `MODEL` with RUM weights and a dual text projection layer.
 - `RUM FLUX.2 Combine Conditioning`: combines FLUX.2-Klein text conditioning with SDXL CLIP conditioning into the format RUM expects.
 
-After those two nodes, the rest is normal ComfyUI: `KSampler`, `Empty Flux 2 Latent`, `VAE Decode`, `Save Image`, etc.
+After those two nodes, the rest is normal ComfyUI. For FLUX.2-Klein, use ComfyUI's FLUX.2 custom sampling path: `RandomNoise` → `CFGGuider` → `KSamplerSelect` → `Flux2Scheduler` → `SamplerCustomAdvanced` → `VAE Decode` → `Save Image`.
 
 ## Why Not Only Diffusers?
 
@@ -89,7 +89,7 @@ Recommended native graph:
 5. Encode the same positive prompt with both CLIP paths.
 6. Use `RUM FLUX.2 Combine Conditioning` for positive conditioning.
 7. Repeat empty or negative prompt conditioning for negative.
-8. Use normal `Empty Flux 2 Latent` → `KSampler` → `VAE Decode` → `Save Image`.
+8. Use `Empty Flux 2 Latent` → `RandomNoise` + `CFGGuider` + `KSamplerSelect` + `Flux2Scheduler` → `SamplerCustomAdvanced` → `VAE Decode` → `Save Image`.
 
 A minimal API workflow is available at:
 
@@ -104,8 +104,9 @@ base_text_tokens=512
 extra_text_tokens=77
 sdxl_clip_width=2048
 guidance=5.0
-KSampler cfg=1.0
-steps=20
+CFGGuider cfg=5.0
+KSamplerSelect sampler=euler
+Flux2Scheduler steps=20
 width=960
 height=1024
 ```
@@ -129,9 +130,13 @@ Known limitations:
 - The RUM patch node expects a FLUX.2-Klein 4B-compatible base model.
 - `base_text_tokens` must match the FLUX.2 text conditioning length; normal ComfyUI FLUX.2-Klein uses `512`.
 - LoRA and ControlNet compatibility has not been validated yet.
-- The example uses a basic `KSampler`; more accurate FLUX.2 scheduler workflows may still need tuning.
+- Use `Flux2Scheduler` + `SamplerCustomAdvanced`; plain `KSampler scheduler=simple` is known to produce bad/glitched results for FLUX.2 here.
 
 ## Troubleshooting
+
+### Image is noisy, glitched, or structurally wrong
+
+Most likely you used plain `KSampler` with `scheduler=simple`. For FLUX.2-Klein, use `Flux2Scheduler` + `SamplerCustomAdvanced` instead. Match the scheduler `width` and `height` to `Empty Flux 2 Latent`, use `KSamplerSelect sampler=euler`, and start with `CFGGuider cfg=5.0`.
 
 ### RUM checkpoint does not appear in the dropdown
 
@@ -175,7 +180,7 @@ Try:
 
 这是给 [RimoChan/RUM](https://github.com/RimoChan/RUM) 的 `RUM-FLUX.2-klein-4B-preview` 做的 ComfyUI 原生适配节点。
 
-主分支现在是 **Native ComfyUI 模式**：模型、conditioning、latent、KSampler、VAE Decode 都尽量走 ComfyUI 原生系统。旧的 diffusers 一体式版本已经放到 [`diffusers-pipeline`](https://github.com/peter119lee/ComfyUI-RUM/tree/diffusers-pipeline) 分支。
+主分支现在是 **Native ComfyUI 模式**：模型、conditioning、latent、自定义采样、VAE Decode 都尽量走 ComfyUI 原生系统。旧的 diffusers 一体式版本已经放到 [`diffusers-pipeline`](https://github.com/peter119lee/ComfyUI-RUM/tree/diffusers-pipeline) 分支。
 
 > **授权提醒**
 >
@@ -192,7 +197,7 @@ RUM 在 FLUX.2-Klein 上额外加了一路 SDXL CLIP 条件。普通 ComfyUI 的
 - `RUM FLUX.2 Apply Model Patch`：把普通 ComfyUI FLUX.2-Klein `MODEL` patch 成 RUM 需要的模型。
 - `RUM FLUX.2 Combine Conditioning`：把 FLUX.2-Klein 文本特征和 SDXL CLIP 文本特征拼成 RUM 需要的 conditioning。
 
-后面继续用普通 ComfyUI 节点：`KSampler`、`Empty Flux 2 Latent`、`VAE Decode`、`Save Image`。
+后面继续用普通 ComfyUI 节点。但 FLUX.2-Klein 不建议走普通 `KSampler scheduler=simple`，请走官方 FLUX.2 采样链：`RandomNoise` → `CFGGuider` → `KSamplerSelect` → `Flux2Scheduler` → `SamplerCustomAdvanced` → `VAE Decode` → `Save Image`。
 
 ## 为什么不用 diffusers 版就好
 
@@ -260,7 +265,7 @@ python scripts/download_models.py --token YOUR_HF_TOKEN
 5. 同一个正向 prompt 分别用 FLUX2 CLIP 和 SDXL CLIP encode。
 6. 用 `RUM FLUX.2 Combine Conditioning` 合并正向 conditioning。
 7. 负向 conditioning 也重复一次，可以用空 prompt。
-8. 后面接正常 `Empty Flux 2 Latent` → `KSampler` → `VAE Decode` → `Save Image`。
+8. 后面接 `Empty Flux 2 Latent` → `RandomNoise` + `CFGGuider` + `KSamplerSelect` + `Flux2Scheduler` → `SamplerCustomAdvanced` → `VAE Decode` → `Save Image`。
 
 示例 API workflow：
 
@@ -275,8 +280,9 @@ base_text_tokens=512
 extra_text_tokens=77
 sdxl_clip_width=2048
 guidance=5.0
-KSampler cfg=1.0
-steps=20
+CFGGuider cfg=5.0
+KSamplerSelect sampler=euler
+Flux2Scheduler steps=20
 width=960
 height=1024
 ```
@@ -300,9 +306,13 @@ python scripts/check_install.py
 - RUM patch node 需要 FLUX.2-Klein 4B 兼容底模。
 - `base_text_tokens` 要和 FLUX.2 文本 conditioning 长度一致；普通 ComfyUI FLUX.2-Klein 通常是 `512`。
 - LoRA / ControlNet 兼容性还没验证。
-- 示例先用基础 `KSampler`，更准确的 FLUX.2 scheduler workflow 之后还可以继续调。
+- 请用 `Flux2Scheduler` + `SamplerCustomAdvanced`；普通 `KSampler scheduler=simple` 在这里已知会容易出噪声/崩图。
 
 ## 常见问题
+
+### 画面很糊、全是噪声、结构明显不对
+
+最可能是用了普通 `KSampler`，而且 `scheduler=simple`。FLUX.2-Klein 这里应该用 `Flux2Scheduler` + `SamplerCustomAdvanced`。`Flux2Scheduler` 的 `width` / `height` 要和 `Empty Flux 2 Latent` 一致，`KSamplerSelect` 先用 `euler`，`CFGGuider cfg` 先用 `5.0`。
 
 ### 下拉列表看不到 RUM checkpoint
 
