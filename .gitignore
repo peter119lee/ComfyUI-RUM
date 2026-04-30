@@ -1,4 +1,4 @@
-# Local model files are huge; never commit them.
+# Huge local model files.
 models/
 *.safetensors
 *.ckpt
@@ -22,13 +22,11 @@ dist/
 .venv/
 venv/
 
-# ComfyUI runtime artifacts.
+# Runtime/editor noise.
 input/
 output/
 temp/
 *.log
-
-# OS/editor noise.
 .DS_Store
 Thumbs.db
 .vscode/

@@ -10,7 +10,6 @@ MODEL_PATHS_WINDOWS.md
 __pycache__/
 *.py[cod]
 .git/
-.github/
 .pytest_cache/
 .ruff_cache/
 build/
