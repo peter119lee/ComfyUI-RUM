@@ -1,0 +1,37 @@
+{
+  "1": {
+    "class_type": "RUMFlux2KleinLoader",
+    "inputs": {
+      "base_model_path": "models/FLUX.2-klein-base-4B",
+      "rum_checkpoint_path": "models/RUM-FLUX.2-klein-4B-preview/model-checkpoint-608000.safetensors",
+      "sdxl_model_path": "models/waiIllustriousSDXL_v160_text",
+      "dtype": "bfloat16",
+      "device": "auto",
+      "sdxl_text_device": "cpu",
+      "unload_sdxl_unet_vae": true,
+      "force_reload": false
+    }
+  },
+  "2": {
+    "class_type": "RUMFlux2KleinSampler",
+    "inputs": {
+      "pipeline": ["1", 0],
+      "prompt": "1girl, kisaki (blue archive), eating baozi, sitting, indoors",
+      "seed": 1,
+      "steps": 20,
+      "guidance_scale": 5.0,
+      "width": 960,
+      "height": 1024,
+      "num_images": 1,
+      "max_sequence_length": 200,
+      "text_encoder_out_layers": "10,20,30"
+    }
+  },
+  "3": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "filename_prefix": "RUM",
+      "images": ["2", 0]
+    }
+  }
+}

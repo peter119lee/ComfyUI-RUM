@@ -1,0 +1,5 @@
+{
+  "base_model_path": "models/FLUX.2-klein-base-4B",
+  "rum_checkpoint_path": "models/RUM-FLUX.2-klein-4B-preview/model-checkpoint-608000.safetensors",
+  "sdxl_model_path": "models/waiIllustriousSDXL_v160_text"
+}

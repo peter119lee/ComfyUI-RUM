@@ -1,0 +1,35 @@
+# Local model files are huge; never commit them.
+models/
+*.safetensors
+*.ckpt
+*.pt
+*.pth
+*.gguf
+
+# Local user configuration.
+local_config.json
+MODEL_PATHS.md
+MODEL_PATHS_WINDOWS.md
+
+# Python/cache/build artifacts.
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+.venv/
+venv/
+
+# ComfyUI runtime artifacts.
+input/
+output/
+temp/
+*.log
+
+# OS/editor noise.
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

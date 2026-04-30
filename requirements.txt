@@ -1,0 +1,5 @@
+diffusers>=0.37.1
+transformers
+safetensors
+numpy
+pillow

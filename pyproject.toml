@@ -1,0 +1,25 @@
+[project]
+name = "rum-flux2-klein"
+version = "0.1.0"
+description = "ComfyUI nodes for RUM FLUX.2-klein diffusers inference with extra SDXL CLIP conditioning."
+requires-python = ">=3.10"
+readme = "README.md"
+dynamic = ["dependencies"]
+classifiers = [
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Topic :: Multimedia :: Graphics",
+]
+
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements.txt"] }
+
+[project.urls]
+Repository = "https://github.com/peter119lee/ComfyUI-RUM"
+Documentation = "https://github.com/peter119lee/ComfyUI-RUM#readme"
+"Bug Tracker" = "https://github.com/peter119lee/ComfyUI-RUM/issues"
+"Upstream RUM" = "https://github.com/RimoChan/RUM"
+
+[tool.comfy]
+PublisherId = "peter119lee"
+DisplayName = "RUM FLUX.2-klein"
