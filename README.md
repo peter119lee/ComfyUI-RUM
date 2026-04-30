@@ -23,7 +23,7 @@ RUM 的重点是：在 FLUX.2-Klein 之外，额外接入一路 SDXL CLIP 文本
 
 ## 为什么 native 不能 100% 复现 diffusers
 
-直接说：**因为这不是同一个执行环境**。RUM 上游现在能稳定跑的是 diffusers 推理；ComfyUI native 是把它拆进 ComfyUI 的模型、CLIP、sampler、noise、conditioning 系统里跑。只要其中一个细节不同，扩散模型就会越采样越偏，最后角色和构图都可能变。
+直接说：**因为这不是同一个执行环境**。公开的 RUM 参考推理路径是 diffusers；ComfyUI native 是把这条路径重新拆进 ComfyUI 的模型、CLIP、sampler、noise、conditioning 系统里跑。只要其中一个细节不同，扩散模型就会越采样越偏，最后角色和构图都可能变。
 
 最关键的差异是：
 
