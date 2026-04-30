@@ -115,9 +115,12 @@ class RUMDiffusersMatchWrapper:
         if cross_attn is not None:
             total_tokens = self.base_text_tokens + self.extra_text_tokens
             if cross_attn.shape[1] > total_tokens:
-                base = cross_attn[:, : self.base_text_tokens]
-                extra = cross_attn[:, -self.extra_text_tokens :]
-                conditions["c_crossattn"] = torch.cat([base, extra], dim=1)
+                if cross_attn.shape[1] <= 512:
+                    conditions["c_crossattn"] = cross_attn[:, -total_tokens:]
+                else:
+                    base = cross_attn[:, : self.base_text_tokens]
+                    extra = cross_attn[:, -self.extra_text_tokens :]
+                    conditions["c_crossattn"] = torch.cat([base, extra], dim=1)
         return apply_model(params["input"], params["timestep"], **conditions)
 
     def clone(self):

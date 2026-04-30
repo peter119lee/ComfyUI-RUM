@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.3
+
+- Fixed diffusers-match token cropping when ComfyUI pads FLUX.2 text conditioning to 512 tokens.
+- Updated example workflows to use Windows-compatible nested diffusion model paths.
+
 ## 0.2.2
 
 - Added `RUM FLUX.2 Diffusers Match Model Patch` for old diffusers-style token cropping.
