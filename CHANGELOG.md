@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.4
+
+- Fixed the visual diffusers-match workflow so it uses the same native approximation path as the API workflow.
+- Routed the positive Qwen encode through the diffusers-match layer override while keeping negative on default 512-token Qwen conditioning.
+- Made `RUM FLUX.2 Set Qwen Layers` safer by temporarily applying the layer override only during encoding and forcing cache invalidation.
+- Rewrote README in Simplified Chinese and documented normal ComfyUI model paths.
+
 ## 0.2.3
 
 - Fixed diffusers-match token cropping when ComfyUI pads FLUX.2 text conditioning to 512 tokens.

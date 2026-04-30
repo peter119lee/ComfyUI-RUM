@@ -1,3 +1,0 @@
-{
-  "note": "Native main branch does not use local_config.json. Put models in ComfyUI/models and select them in the normal loader nodes. The older diffusers-pipeline branch used local_config.json."
-}

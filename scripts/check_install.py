@@ -2,11 +2,24 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import os
+import re
 import sys
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def normalize_cli_path(path: Path) -> Path:
+    raw = str(path)
+    if os.name == "nt":
+        match = re.match(r"^/mnt/([a-zA-Z])(?:/(.*))?$", raw.replace("\\", "/"))
+        if match:
+            drive = match.group(1).upper()
+            rest = (match.group(2) or "").replace("/", "\\")
+            return Path(f"{drive}:\\{rest}")
+    return path.expanduser().resolve()
 
 
 def parse_args() -> argparse.Namespace:
@@ -39,7 +52,7 @@ def load_node_module(comfy_root: Path):
 
 def main() -> int:
     args = parse_args()
-    comfy_root = args.comfy_root.expanduser().resolve()
+    comfy_root = normalize_cli_path(args.comfy_root)
     print(f"Checking ComfyUI-RUM at: {ROOT}")
     print(f"ComfyUI root: {comfy_root}")
     for package in ("torch", "safetensors"):

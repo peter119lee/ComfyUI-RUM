@@ -68,9 +68,11 @@
         0
       ],
       "guidance": 5.0,
+      "use_guidance_embedding": false,
       "base_text_tokens": 512,
       "extra_text_tokens": 77,
-      "sdxl_clip_width": 2048
+      "sdxl_clip_width": 2048,
+      "use_sdxl_extra": true
     }
   },
   "8": {
@@ -105,9 +107,11 @@
         0
       ],
       "guidance": 5.0,
+      "use_guidance_embedding": false,
       "base_text_tokens": 512,
       "extra_text_tokens": 77,
-      "sdxl_clip_width": 2048
+      "sdxl_clip_width": 2048,
+      "use_sdxl_extra": true
     }
   },
   "11": {

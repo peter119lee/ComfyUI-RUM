@@ -22,3 +22,15 @@ temp/
 *.log
 .DS_Store
 Thumbs.db
+
+# Local debugging helpers.
+.comfyui.log
+.check_comfy.ps1
+.start_comfy.ps1
+.compare_*.py
+.debug_*.py
+.inspect_*.py
+.queue_*.py
+.trace_*.py
+.run_diffusers_reference.py
+.rum_diffusers_reference_impl.py

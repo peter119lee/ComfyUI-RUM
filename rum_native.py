@@ -55,10 +55,11 @@ def combine_rum_conditioning(
     flux2_conditioning,
     sdxl_conditioning,
     *,
-    guidance: float,
+    guidance: float | None,
     base_text_tokens: int,
     extra_text_tokens: int,
     sdxl_clip_width: int,
+    use_sdxl_extra: bool = True,
 ):
     if not flux2_conditioning:
         raise ValueError("flux2_conditioning 不能为空。")
@@ -84,14 +85,20 @@ def combine_rum_conditioning(
             )
 
         flux_base = flux_embeds[:, :base_text_tokens]
-        sdxl_extra = sdxl_embeds.to(device=flux_embeds.device, dtype=flux_embeds.dtype)
-        sdxl_extra = sdxl_extra[:, :extra_text_tokens]
-        sdxl_extra = _fit_last_dim(sdxl_extra, sdxl_clip_width)
-        sdxl_extra = _fit_last_dim(sdxl_extra, flux_base.shape[-1])
+        if use_sdxl_extra:
+            sdxl_extra = sdxl_embeds.to(device=flux_embeds.device, dtype=flux_embeds.dtype)
+            sdxl_extra = sdxl_extra[:, :extra_text_tokens]
+            sdxl_extra = _fit_last_dim(sdxl_extra, sdxl_clip_width)
+            sdxl_extra = _fit_last_dim(sdxl_extra, flux_base.shape[-1])
+        else:
+            sdxl_extra = flux_base.new_zeros((flux_base.shape[0], extra_text_tokens, flux_base.shape[-1]))
 
         combined = torch.cat([flux_base, sdxl_extra], dim=1)
         meta = flux_meta.copy()
-        meta["guidance"] = float(guidance)
+        if guidance is None:
+            meta.pop("guidance", None)
+        else:
+            meta["guidance"] = float(guidance)
         meta["rum_base_text_tokens"] = int(flux_base.shape[1])
         meta["rum_extra_text_tokens"] = int(sdxl_extra.shape[1])
         meta.pop("attention_mask", None)
@@ -113,15 +120,40 @@ class RUMDiffusersMatchWrapper:
         conditions = params["c"].copy()
         cross_attn = conditions.get("c_crossattn")
         if cross_attn is not None:
-            total_tokens = self.base_text_tokens + self.extra_text_tokens
-            if cross_attn.shape[1] > total_tokens:
-                if cross_attn.shape[1] <= 512:
-                    conditions["c_crossattn"] = cross_attn[:, -total_tokens:]
-                else:
-                    base = cross_attn[:, : self.base_text_tokens]
-                    extra = cross_attn[:, -self.extra_text_tokens :]
-                    conditions["c_crossattn"] = torch.cat([base, extra], dim=1)
+            branch = conditions.get("transformer_options", {}).get("rum_diffusers_cfg_branch")
+            if branch == "negative":
+                conditions["c_crossattn"] = self._crop_negative(cross_attn)
+            elif branch == "positive":
+                conditions["c_crossattn"] = self._crop_positive(cross_attn)
+            else:
+                conditions["c_crossattn"] = self._crop_legacy(cross_attn)
+        transformer_options = conditions.get("transformer_options", {})
         return apply_model(params["input"], params["timestep"], **conditions)
+
+    def _crop_positive(self, cross_attn: torch.Tensor) -> torch.Tensor:
+        total_tokens = self.base_text_tokens + self.extra_text_tokens
+        if cross_attn.shape[1] == total_tokens:
+            return cross_attn
+        if cross_attn.shape[1] <= 512:
+            return cross_attn[:, -total_tokens:]
+        base = cross_attn[:, : self.base_text_tokens]
+        extra = cross_attn[:, -self.extra_text_tokens :]
+        return torch.cat([base, extra], dim=1)
+
+    def _crop_negative(self, cross_attn: torch.Tensor) -> torch.Tensor:
+        if cross_attn.shape[1] <= 512:
+            return cross_attn
+        return cross_attn[:, :512]
+
+    def _crop_legacy(self, cross_attn: torch.Tensor) -> torch.Tensor:
+        total_tokens = self.base_text_tokens + self.extra_text_tokens
+        if cross_attn.shape[1] <= total_tokens:
+            return cross_attn
+        if cross_attn.shape[1] <= 512:
+            return cross_attn[:, -total_tokens:]
+        base = cross_attn[:, : self.base_text_tokens]
+        extra = cross_attn[:, -self.extra_text_tokens :]
+        return torch.cat([base, extra], dim=1)
 
     def clone(self):
         return RUMDiffusersMatchWrapper(
@@ -132,6 +164,8 @@ class RUMDiffusersMatchWrapper:
 
 
 def apply_diffusers_match_model_wrapper(model, *, base_text_tokens: int, extra_text_tokens: int):
+    import comfy.patcher_extension
+
     patched = model.clone()
     patched.set_model_unet_function_wrapper(
         RUMDiffusersMatchWrapper(
@@ -140,7 +174,105 @@ def apply_diffusers_match_model_wrapper(model, *, base_text_tokens: int, extra_t
             extra_text_tokens=extra_text_tokens,
         )
     )
+    patched.add_wrapper(
+        comfy.patcher_extension.WrappersMP.DIFFUSION_MODEL,
+        RUMDiffusersTimestepWrapper(),
+    )
     return patched
+
+
+class RUMDiffusersTimestepWrapper:
+    def __call__(self, apply_model, x, timestep, context, *args, **kwargs):
+        diffusion_model = apply_model.class_obj
+        original_time_in = diffusion_model.time_in
+        diffusion_dtype = diffusion_model.dtype
+
+        class DiffusersTimeIn(nn.Module):
+            def forward(self, ignored_embedding):
+                from comfy.ldm.flux.layers import timestep_embedding
+
+                diffusers_timestep = (timestep.to(diffusion_dtype) * 1000.0).to(dtype=diffusion_dtype)
+                embedding = timestep_embedding(diffusers_timestep / 1000.0, 256).to(
+                    device=diffusers_timestep.device,
+                    dtype=diffusion_dtype,
+                )
+                return original_time_in(embedding)
+
+        diffusion_model.time_in = DiffusersTimeIn()
+        try:
+            return apply_model(x, timestep, context, *args, **kwargs)
+        finally:
+            diffusion_model.time_in = original_time_in
+
+
+
+def create_diffusers_cfg_guider(model, positive, negative, cfg: float):
+    import comfy.model_patcher
+    import comfy.samplers
+
+    def branch_options(model_options, branch: str):
+        options = comfy.model_patcher.create_model_options_clone(model_options)
+        transformer_options = options.setdefault("transformer_options", {})
+        transformer_options["rum_diffusers_cfg_branch"] = branch
+        options["disable_cfg1_optimization"] = True
+        return options
+
+    class RUMDiffusersCFGGuider(comfy.samplers.CFGGuider):
+        def predict_noise(self, x, timestep, model_options={}, seed=None):
+            positive_cond = self.conds.get("positive", None)
+            negative_cond = self.conds.get("negative", None)
+
+            positive_out = comfy.samplers.calc_cond_batch(
+                self.inner_model,
+                [positive_cond],
+                x,
+                timestep,
+                branch_options(model_options, "positive"),
+            )[0]
+            if negative_cond is None or self.cfg <= 1.0:
+                return positive_out
+
+            negative_out = comfy.samplers.calc_cond_batch(
+                self.inner_model,
+                [negative_cond],
+                x,
+                timestep,
+                branch_options(model_options, "negative"),
+            )[0]
+            return comfy.samplers.cfg_function(
+                self.inner_model,
+                positive_out,
+                negative_out,
+                self.cfg,
+                x,
+                timestep,
+                model_options=model_options,
+                cond=positive_cond,
+                uncond=negative_cond,
+            )
+
+    guider = RUMDiffusersCFGGuider(model)
+    guider.set_conds(positive, negative)
+    guider.set_cfg(float(cfg))
+    return guider
+
+
+def load_rum_native_model(checkpoint_path: str | Path, *, base_text_tokens: int = 200):
+    import comfy.sd
+
+    checkpoint = _resolve_checkpoint_path(checkpoint_path)
+    state_dict = load_file(str(checkpoint), device="cpu")
+    base_weight = _require_key(state_dict, "context_embedder.weight")
+    extra_weight = _require_key(state_dict, "context_embedder_2.weight")
+    converted = convert_rum_diffusers_to_comfy(state_dict, output_prefix="")
+    converted_count = len(converted)
+    model = comfy.sd.load_diffusion_model_state_dict(converted)
+    if model is None:
+        raise ValueError("无法把 RUM checkpoint 加载为 ComfyUI native MODEL。")
+
+    dual_projection = RUMDualTextProjection(base_weight, extra_weight, base_text_tokens=base_text_tokens)
+    model.add_object_patch(f"{_DIFFUSION_PREFIX}txt_in", dual_projection)
+    return model, converted_count, str(checkpoint)
 
 
 def apply_rum_model_patch(model, checkpoint_path: str | Path, *, base_text_tokens: int, strict: bool):
@@ -156,6 +288,7 @@ def apply_rum_model_patch(model, checkpoint_path: str | Path, *, base_text_token
     patched.add_object_patch(f"{_DIFFUSION_PREFIX}txt_in", dual_projection)
 
     model_keys = set(patched.model_state_dict().keys())
+    converted = _adapt_converted_keys_to_model(converted, model_keys)
     missing = sorted(key for key in converted if key not in model_keys)
     shape_errors = []
     for key, tensor in converted.items():
@@ -183,6 +316,43 @@ def apply_rum_model_patch(model, checkpoint_path: str | Path, *, base_text_token
         raise ValueError("没有任何 RUM 权重能套用到当前 MODEL；请确认底模是 FLUX.2-Klein 4B。")
     patched.add_patches(patches, strength_patch=1.0, strength_model=1.0)
     return patched, len(patches), str(checkpoint)
+
+
+def _adapt_converted_keys_to_model(
+    converted: dict[str, torch.Tensor],
+    model_keys: set[str],
+) -> dict[str, torch.Tensor]:
+    output: dict[str, torch.Tensor] = {}
+    for key, tensor in converted.items():
+        if key in model_keys:
+            output[key] = tensor
+            continue
+
+        alternative = _alternate_norm_key(key)
+        if alternative is not None and alternative in model_keys:
+            output[alternative] = tensor
+            continue
+
+        output[key] = tensor
+    return output
+
+
+def _alternate_norm_key(key: str) -> str | None:
+    suffixes = (
+        ".img_attn.norm.query_norm.",
+        ".img_attn.norm.key_norm.",
+        ".txt_attn.norm.query_norm.",
+        ".txt_attn.norm.key_norm.",
+        ".norm.query_norm.",
+        ".norm.key_norm.",
+    )
+    if not any(suffix in key for suffix in suffixes):
+        return None
+    if key.endswith(".weight"):
+        return f"{key[:-len('.weight')]}.scale"
+    if key.endswith(".scale"):
+        return f"{key[:-len('.scale')]}.weight"
+    return None
 
 
 def convert_rum_diffusers_to_comfy(state_dict: dict[str, torch.Tensor], output_prefix: str = "") -> dict[str, torch.Tensor]:
@@ -264,10 +434,10 @@ def _flux2_diffusers_to_comfy_key_map(
             "ff.linear_out.weight": "img_mlp.2.weight",
             "ff_context.linear_in.weight": "txt_mlp.0.weight",
             "ff_context.linear_out.weight": "txt_mlp.2.weight",
-            "attn.norm_q.weight": "img_attn.norm.query_norm.weight",
-            "attn.norm_k.weight": "img_attn.norm.key_norm.weight",
-            "attn.norm_added_q.weight": "txt_attn.norm.query_norm.weight",
-            "attn.norm_added_k.weight": "txt_attn.norm.key_norm.weight",
+            "attn.norm_q.weight": "img_attn.norm.query_norm.scale",
+            "attn.norm_k.weight": "img_attn.norm.key_norm.scale",
+            "attn.norm_added_q.weight": "txt_attn.norm.query_norm.scale",
+            "attn.norm_added_k.weight": "txt_attn.norm.key_norm.scale",
         }
         for source_suffix, target_suffix in block_map.items():
             key_map[f"{source}.{source_suffix}"] = f"{target}.{target_suffix}"
@@ -278,8 +448,8 @@ def _flux2_diffusers_to_comfy_key_map(
         block_map = {
             "attn.to_qkv_mlp_proj.weight": "linear1.weight",
             "attn.to_out.weight": "linear2.weight",
-            "attn.norm_q.weight": "norm.query_norm.weight",
-            "attn.norm_k.weight": "norm.key_norm.weight",
+            "attn.norm_q.weight": "norm.query_norm.scale",
+            "attn.norm_k.weight": "norm.key_norm.scale",
         }
         for source_suffix, target_suffix in block_map.items():
             key_map[f"{source}.{source_suffix}"] = f"{target}.{target_suffix}"

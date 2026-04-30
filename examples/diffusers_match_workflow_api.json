@@ -1,29 +1,17 @@
 {
   "1": {
-    "class_type": "UNETLoader",
+    "class_type": "RUMFlux2LoadNativeModel",
     "inputs": {
-      "unet_name": "flux-2-klein\\flux-2-klein-4b-fp8.safetensors",
-      "weight_dtype": "default"
-    }
-  },
-  "2": {
-    "class_type": "RUMFlux2ApplyModelPatch",
-    "inputs": {
-      "model": [
-        "1",
-        0
-      ],
       "rum_checkpoint_name": "rum-flux2-klein-4b-preview.safetensors",
-      "base_text_tokens": 200,
-      "strict": true,
-      "rum_checkpoint_path": ""
+      "rum_checkpoint_path": "",
+      "base_text_tokens": 200
     }
   },
   "3": {
     "class_type": "RUMFlux2DiffusersMatchModelPatch",
     "inputs": {
       "model": [
-        "2",
+        "1",
         0
       ],
       "base_text_tokens": 200,
@@ -51,20 +39,23 @@
     "class_type": "CLIPTextEncode",
     "inputs": {
       "clip": [
-        "4",
+        "21",
         0
       ],
       "text": "1girl, kisaki (blue archive), eating baozi, sitting, indoors"
     }
   },
   "7": {
-    "class_type": "CLIPTextEncode",
+    "class_type": "RUMSDXLDiffusersTextEncode",
     "inputs": {
       "clip": [
         "5",
         0
       ],
       "text": "1girl, kisaki (blue archive), eating baozi, sitting, indoors"
+    },
+    "_meta": {
+      "title": "RUM SDXL Diffusers Text Encode"
     }
   },
   "8": {
@@ -79,9 +70,11 @@
         0
       ],
       "guidance": 5.0,
+      "use_guidance_embedding": false,
       "base_text_tokens": 200,
       "extra_text_tokens": 77,
-      "sdxl_clip_width": 2048
+      "sdxl_clip_width": 2048,
+      "use_sdxl_extra": true
     }
   },
   "9": {
@@ -94,33 +87,6 @@
       "text": ""
     }
   },
-  "10": {
-    "class_type": "CLIPTextEncode",
-    "inputs": {
-      "clip": [
-        "5",
-        0
-      ],
-      "text": ""
-    }
-  },
-  "11": {
-    "class_type": "RUMFlux2CombineConditioning",
-    "inputs": {
-      "flux2_conditioning": [
-        "9",
-        0
-      ],
-      "sdxl_conditioning": [
-        "10",
-        0
-      ],
-      "guidance": 5.0,
-      "base_text_tokens": 200,
-      "extra_text_tokens": 77,
-      "sdxl_clip_width": 2048
-    }
-  },
   "12": {
     "class_type": "EmptyFlux2LatentImage",
     "inputs": {
@@ -130,9 +96,10 @@
     }
   },
   "13": {
-    "class_type": "RandomNoise",
+    "class_type": "RUMFlux2DiffusersNoise",
     "inputs": {
-      "noise_seed": 7478533297787
+      "noise_seed": 7478533297787,
+      "dtype": "bfloat16"
     }
   },
   "14": {
@@ -149,24 +116,6 @@
       "height": 1024
     }
   },
-  "16": {
-    "class_type": "CFGGuider",
-    "inputs": {
-      "model": [
-        "3",
-        0
-      ],
-      "positive": [
-        "8",
-        0
-      ],
-      "negative": [
-        "11",
-        0
-      ],
-      "cfg": 5.0
-    }
-  },
   "17": {
     "class_type": "SamplerCustomAdvanced",
     "inputs": {
@@ -175,7 +124,7 @@
         0
       ],
       "guider": [
-        "16",
+        "22",
         0
       ],
       "sampler": [
@@ -219,6 +168,40 @@
         "19",
         0
       ]
+    }
+  },
+  "21": {
+    "inputs": {
+      "clip": [
+        "4",
+        0
+      ],
+      "layers": "10,20,30"
+    },
+    "class_type": "RUMFlux2SetQwenLayers",
+    "_meta": {
+      "title": "RUM FLUX.2 Set Qwen Layers"
+    }
+  },
+  "22": {
+    "inputs": {
+      "model": [
+        "3",
+        0
+      ],
+      "positive": [
+        "8",
+        0
+      ],
+      "negative": [
+        "9",
+        0
+      ],
+      "cfg": 5.0
+    },
+    "class_type": "RUMFlux2DiffusersCFGuider",
+    "_meta": {
+      "title": "RUM FLUX.2 Diffusers CFG Guider"
     }
   }
 }
