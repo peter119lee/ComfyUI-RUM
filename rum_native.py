@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import re
+import gc
+from contextlib import contextmanager
 from pathlib import Path
+from types import MethodType
 from typing import Iterable
 
 import torch
@@ -11,6 +14,250 @@ from safetensors.torch import load_file
 
 
 _DIFFUSION_PREFIX = "diffusion_model."
+_TEXT_ENCODER_CACHE: dict[tuple[str, ...], "RUMDiffusersExactTextEncoder"] = {}
+_DIFFUSERS_FLUX2_VAE_CACHE: dict[tuple[str, str], nn.Module] = {}
+
+
+class RUMDiffusersExactTextEncoder:
+    def __init__(
+        self,
+        *,
+        flux2_model_path: str | Path,
+        sdxl_text_model_path: str | Path,
+        device: str,
+        qwen_dtype: torch.dtype,
+        sdxl_dtype: torch.dtype,
+    ):
+        from diffusers import Flux2KleinPipeline
+        from transformers import CLIPTextModel, CLIPTextModelWithProjection, CLIPTokenizer
+
+        self.device = torch.device(device)
+        self.qwen_dtype = qwen_dtype
+        self.sdxl_dtype = sdxl_dtype
+        flux2_path = Path(flux2_model_path).expanduser()
+        sdxl_path = Path(sdxl_text_model_path).expanduser()
+        self.flux2_model_path = str(flux2_path)
+        self.sdxl_text_model_path = str(sdxl_path)
+
+        qwen_pipe = Flux2KleinPipeline.from_pretrained(
+            str(flux2_path),
+            transformer=None,
+            vae=None,
+            torch_dtype=qwen_dtype,
+        )
+        self.qwen_tokenizer = qwen_pipe.tokenizer
+        self.qwen_text_encoder = qwen_pipe.text_encoder
+        self.qwen_text_encoder.to(self.device)
+        self.qwen_text_encoder.requires_grad_(False)
+        self.qwen_text_encoder.eval()
+        qwen_pipe.tokenizer = None
+        qwen_pipe.text_encoder = None
+        del qwen_pipe
+
+        self.sdxl_tokenizer = CLIPTokenizer.from_pretrained(str(sdxl_path), subfolder="tokenizer")
+        self.sdxl_tokenizer_2 = CLIPTokenizer.from_pretrained(str(sdxl_path), subfolder="tokenizer_2")
+        self.sdxl_text_encoder = CLIPTextModel.from_pretrained(
+            str(sdxl_path),
+            subfolder="text_encoder",
+            torch_dtype=sdxl_dtype,
+        )
+        self.sdxl_text_encoder_2 = CLIPTextModelWithProjection.from_pretrained(
+            str(sdxl_path),
+            subfolder="text_encoder_2",
+            torch_dtype=sdxl_dtype,
+        )
+        for module in (self.sdxl_text_encoder, self.sdxl_text_encoder_2):
+            module.to(self.device, dtype=sdxl_dtype)
+            module.requires_grad_(False)
+            module.eval()
+
+    @torch.inference_mode()
+    def encode(
+        self,
+        *,
+        prompt: str,
+        negative_prompt: str,
+        guidance: float | None,
+        base_text_tokens: int,
+        negative_text_tokens: int,
+        extra_text_tokens: int,
+        positive_qwen_layers: Iterable[int],
+        negative_qwen_layers: Iterable[int],
+    ):
+        positive_qwen_layers = tuple(int(layer) for layer in positive_qwen_layers)
+        negative_qwen_layers = tuple(int(layer) for layer in negative_qwen_layers)
+        if len(positive_qwen_layers) != 3:
+            raise ValueError("positive_qwen_layers 必须正好包含 3 个层号，例如 10,20,30。")
+        if len(negative_qwen_layers) != 3:
+            raise ValueError("negative_qwen_layers 必须正好包含 3 个层号，例如 9,18,27。")
+
+        positive_qwen = self._encode_qwen(
+            prompt=prompt,
+            max_sequence_length=base_text_tokens,
+            hidden_states_layers=positive_qwen_layers,
+        )
+        positive_sdxl = self._encode_sdxl(prompt)[:, :extra_text_tokens]
+        positive_sdxl = positive_sdxl.to(device=positive_qwen.device, dtype=positive_qwen.dtype)
+        positive_sdxl = _fit_last_dim(positive_sdxl, positive_qwen.shape[-1])
+
+        positive = torch.cat([positive_qwen, positive_sdxl], dim=1).to(device="cpu", dtype=torch.float32)
+        positive_meta = {
+            "rum_base_text_tokens": int(base_text_tokens),
+            "rum_extra_text_tokens": int(extra_text_tokens),
+        }
+        if guidance is not None:
+            positive_meta["guidance"] = float(guidance)
+
+        negative = self._encode_qwen(
+            prompt=negative_prompt,
+            max_sequence_length=negative_text_tokens,
+            hidden_states_layers=negative_qwen_layers,
+        ).to(device="cpu", dtype=torch.float32)
+
+        return [[positive, positive_meta]], [[negative, {}]]
+
+    def _encode_qwen(
+        self,
+        *,
+        prompt: str,
+        max_sequence_length: int,
+        hidden_states_layers: Iterable[int],
+    ) -> torch.Tensor:
+        messages = [{"role": "user", "content": prompt}]
+        text = self.qwen_tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+            enable_thinking=False,
+        )
+        inputs = self.qwen_tokenizer(
+            text,
+            return_tensors="pt",
+            padding="max_length",
+            truncation=True,
+            max_length=int(max_sequence_length),
+        )
+        output = self.qwen_text_encoder(
+            input_ids=inputs["input_ids"].to(self.device),
+            attention_mask=inputs["attention_mask"].to(self.device),
+            output_hidden_states=True,
+            use_cache=False,
+        )
+        stacked = torch.stack([output.hidden_states[int(layer)] for layer in hidden_states_layers], dim=1)
+        stacked = stacked.to(dtype=self.qwen_dtype, device=self.device)
+        batch_size, layer_count, seq_len, hidden_dim = stacked.shape
+        return stacked.permute(0, 2, 1, 3).reshape(batch_size, seq_len, layer_count * hidden_dim)
+
+    def _encode_sdxl(self, prompt: str) -> torch.Tensor:
+        prompt_embeds = []
+        for tokenizer, text_encoder in (
+            (self.sdxl_tokenizer, self.sdxl_text_encoder),
+            (self.sdxl_tokenizer_2, self.sdxl_text_encoder_2),
+        ):
+            text_inputs = tokenizer(
+                [prompt],
+                padding="max_length",
+                max_length=tokenizer.model_max_length,
+                truncation=True,
+                return_tensors="pt",
+            )
+            output = text_encoder(
+                text_inputs.input_ids.to(self.device),
+                output_hidden_states=True,
+            )
+            prompt_embeds.append(output.hidden_states[-2].to(dtype=self.sdxl_dtype, device=self.device))
+        return torch.cat(prompt_embeds, dim=-1)
+
+
+def encode_diffusers_exact_rum_text(
+    *,
+    prompt: str,
+    negative_prompt: str = "",
+    flux2_model_path: str | Path,
+    sdxl_text_model_path: str | Path,
+    device: str = "cuda",
+    qwen_dtype: str = "bfloat16",
+    sdxl_dtype: str = "float16",
+    unload_after_encode: bool = False,
+    guidance: float | None = None,
+    base_text_tokens: int = 200,
+    negative_text_tokens: int = 512,
+    extra_text_tokens: int = 77,
+    positive_qwen_layers: str | Iterable[int] = "10,20,30",
+    negative_qwen_layers: str | Iterable[int] = "9,18,27",
+):
+    resolved_device = _resolve_text_device(device)
+    qwen_torch_dtype = _resolve_dtype(qwen_dtype)
+    sdxl_torch_dtype = _resolve_dtype(sdxl_dtype)
+    positive_layers = _parse_qwen_layers(positive_qwen_layers)
+    negative_layers = _parse_qwen_layers(negative_qwen_layers)
+    cache_key = (
+        str(Path(flux2_model_path).expanduser().resolve()),
+        str(Path(sdxl_text_model_path).expanduser().resolve()),
+        resolved_device,
+        str(qwen_torch_dtype),
+        str(sdxl_torch_dtype),
+    )
+    encoder = _TEXT_ENCODER_CACHE.get(cache_key)
+    if encoder is None:
+        encoder = RUMDiffusersExactTextEncoder(
+            flux2_model_path=flux2_model_path,
+            sdxl_text_model_path=sdxl_text_model_path,
+            device=resolved_device,
+            qwen_dtype=qwen_torch_dtype,
+            sdxl_dtype=sdxl_torch_dtype,
+        )
+        _TEXT_ENCODER_CACHE[cache_key] = encoder
+
+    positive, negative = encoder.encode(
+        prompt=prompt,
+        negative_prompt=negative_prompt,
+        guidance=guidance,
+        base_text_tokens=base_text_tokens,
+        negative_text_tokens=negative_text_tokens,
+        extra_text_tokens=extra_text_tokens,
+        positive_qwen_layers=positive_layers,
+        negative_qwen_layers=negative_layers,
+    )
+    if unload_after_encode:
+        _TEXT_ENCODER_CACHE.pop(cache_key, None)
+        del encoder
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    return positive, negative
+
+
+
+def _parse_qwen_layers(value: str | Iterable[int]) -> tuple[int, int, int]:
+    if isinstance(value, str):
+        layers = tuple(int(part.strip()) for part in value.split(",") if part.strip())
+    else:
+        layers = tuple(int(layer) for layer in value)
+    if len(layers) != 3:
+        raise ValueError("Qwen 层号必须正好是 3 个整数，例如 10,20,30。")
+    return layers
+
+
+def _resolve_dtype(dtype_name: str) -> torch.dtype:
+    mapping = {
+        "bfloat16": torch.bfloat16,
+        "float16": torch.float16,
+        "float32": torch.float32,
+    }
+    if dtype_name not in mapping:
+        raise ValueError(f"不支持 dtype：{dtype_name}")
+    return mapping[dtype_name]
+
+
+def _resolve_text_device(device: str) -> str:
+    if device == "auto":
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    if device == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("你选择了 cuda，但当前 PyTorch 看不到 CUDA。")
+    if device not in {"cuda", "cpu"}:
+        raise ValueError(f"不支持 text encoder device：{device}")
+    return device
 
 
 class RUMDualTextProjection(nn.Module):
@@ -106,79 +353,322 @@ def combine_rum_conditioning(
     return output
 
 
-class RUMDiffusersMatchWrapper:
-    def __init__(self, base_model, base_text_tokens: int, extra_text_tokens: int):
+class RUMDiffusersMatchTokenPolicy:
+    def __init__(self, base_text_tokens: int, extra_text_tokens: int):
         if base_text_tokens <= 0:
             raise ValueError("diffusers match base_text_tokens 必须大于 0。")
         if extra_text_tokens <= 0:
             raise ValueError("diffusers match extra_text_tokens 必须大于 0。")
-        self.base_model = base_model
         self.base_text_tokens = int(base_text_tokens)
         self.extra_text_tokens = int(extra_text_tokens)
 
-    def __call__(self, apply_model, params):
-        conditions = params["c"].copy()
-        cross_attn = conditions.get("c_crossattn")
-        if cross_attn is not None:
-            branch = conditions.get("transformer_options", {}).get("rum_diffusers_cfg_branch")
-            if branch == "negative":
-                conditions["c_crossattn"] = self._crop_negative(cross_attn)
-            elif branch == "positive":
-                conditions["c_crossattn"] = self._crop_positive(cross_attn)
-            else:
-                conditions["c_crossattn"] = self._crop_legacy(cross_attn)
-        transformer_options = conditions.get("transformer_options", {})
-        return apply_model(params["input"], params["timestep"], **conditions)
+    @property
+    def total_tokens(self) -> int:
+        return self.base_text_tokens + self.extra_text_tokens
 
-    def _crop_positive(self, cross_attn: torch.Tensor) -> torch.Tensor:
-        total_tokens = self.base_text_tokens + self.extra_text_tokens
-        if cross_attn.shape[1] == total_tokens:
+    def select(self, cross_attn: torch.Tensor, branch: str | None) -> torch.Tensor:
+        if branch == "negative":
+            return self.negative(cross_attn)
+        if branch == "positive":
+            return self.positive(cross_attn)
+        return self.legacy(cross_attn)
+
+    def positive(self, cross_attn: torch.Tensor) -> torch.Tensor:
+        if cross_attn.shape[1] == self.total_tokens:
             return cross_attn
         if cross_attn.shape[1] <= 512:
-            return cross_attn[:, -total_tokens:]
+            return cross_attn[:, -self.total_tokens :]
         base = cross_attn[:, : self.base_text_tokens]
         extra = cross_attn[:, -self.extra_text_tokens :]
         return torch.cat([base, extra], dim=1)
 
-    def _crop_negative(self, cross_attn: torch.Tensor) -> torch.Tensor:
+    def negative(self, cross_attn: torch.Tensor) -> torch.Tensor:
         if cross_attn.shape[1] <= 512:
             return cross_attn
         return cross_attn[:, :512]
 
-    def _crop_legacy(self, cross_attn: torch.Tensor) -> torch.Tensor:
-        total_tokens = self.base_text_tokens + self.extra_text_tokens
-        if cross_attn.shape[1] <= total_tokens:
+    def legacy(self, cross_attn: torch.Tensor) -> torch.Tensor:
+        if cross_attn.shape[1] <= self.total_tokens:
             return cross_attn
-        if cross_attn.shape[1] <= 512:
-            return cross_attn[:, -total_tokens:]
+        if cross_attn.shape[1] == 512:
+            return cross_attn
+        if cross_attn.shape[1] < 512:
+            return cross_attn[:, -self.total_tokens :]
         base = cross_attn[:, : self.base_text_tokens]
         extra = cross_attn[:, -self.extra_text_tokens :]
         return torch.cat([base, extra], dim=1)
 
-    def clone(self):
-        return RUMDiffusersMatchWrapper(
-            self.base_model,
-            base_text_tokens=self.base_text_tokens,
-            extra_text_tokens=self.extra_text_tokens,
-        )
+
+class RUMDiffusersMatchExtraConds:
+    def __init__(
+        self,
+        original_extra_conds,
+        token_policy: RUMDiffusersMatchTokenPolicy,
+        *,
+        disable_guidance: bool,
+    ):
+        self.original_extra_conds = original_extra_conds
+        self.token_policy = token_policy
+        self.disable_guidance = bool(disable_guidance)
+
+    def __call__(self, **kwargs):
+        output = self.original_extra_conds(**kwargs)
+        if self.disable_guidance:
+            output = output.copy()
+            output.pop("guidance", None)
+
+        cross_attn = kwargs.get("cross_attn", None)
+        if cross_attn is None:
+            return output
+
+        branch = kwargs.get("rum_diffusers_cfg_branch")
+        if branch is None:
+            branch = kwargs.get("prompt_type")
+        if branch is None:
+            branch = kwargs.get("transformer_options", {}).get("rum_diffusers_cfg_branch")
+        selected = self.token_policy.select(cross_attn, branch)
+
+        try:
+            import comfy.conds
+        except Exception:
+            return output
+
+        output = output.copy()
+        output["c_crossattn"] = comfy.conds.CONDRegular(selected)
+        return output
 
 
-def apply_diffusers_match_model_wrapper(model, *, base_text_tokens: int, extra_text_tokens: int):
+def apply_diffusers_match_model_wrapper(
+    model,
+    *,
+    base_text_tokens: int,
+    extra_text_tokens: int,
+    disable_guidance: bool = True,
+):
     import comfy.patcher_extension
 
     patched = model.clone()
-    patched.set_model_unet_function_wrapper(
-        RUMDiffusersMatchWrapper(
-            patched,
-            base_text_tokens=base_text_tokens,
-            extra_text_tokens=extra_text_tokens,
-        )
-    )
+    patched.rum_diffusers_match_config = {
+        "base_text_tokens": int(base_text_tokens),
+        "extra_text_tokens": int(extra_text_tokens),
+        "disable_guidance": bool(disable_guidance),
+    }
     patched.add_wrapper(
         comfy.patcher_extension.WrappersMP.DIFFUSION_MODEL,
         RUMDiffusersTimestepWrapper(),
     )
     return patched
+
+
+def _linear_split(module: nn.Module, tensor: torch.Tensor, start: int, width: int) -> torch.Tensor:
+    weight = module.weight.narrow(0, start, width)
+    bias = getattr(module, "bias", None)
+    if bias is not None:
+        bias = bias.narrow(0, start, width)
+    if weight.device != tensor.device or weight.dtype != tensor.dtype:
+        weight = weight.to(device=tensor.device, dtype=tensor.dtype)
+    if bias is not None and (bias.device != tensor.device or bias.dtype != tensor.dtype):
+        bias = bias.to(device=tensor.device, dtype=tensor.dtype)
+    return F.linear(tensor, weight, bias)
+
+
+def _diffusers_rope_from_comfy_pe(pe: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    if pe.ndim != 6 or pe.shape[-2:] != (2, 2):
+        raise ValueError(f"RUM diffusers-match RoPE 需要 ComfyUI FLUX pe tensor，当前形状是 {tuple(pe.shape)}。")
+    matrix = pe[0, 0]
+    cos = matrix[..., 0, 0]
+    sin = matrix[..., 1, 0]
+    return cos.repeat_interleave(2, dim=-1), sin.repeat_interleave(2, dim=-1)
+
+
+def _diffusers_apply_rotary_emb(tensor: torch.Tensor, rope: tuple[torch.Tensor, torch.Tensor]) -> torch.Tensor:
+    cos, sin = rope
+    cos = cos[None, :, None, :].to(device=tensor.device)
+    sin = sin[None, :, None, :].to(device=tensor.device)
+    real, imag = tensor.reshape(*tensor.shape[:-1], -1, 2).unbind(-1)
+    rotated = torch.stack((-imag, real), dim=-1).flatten(3)
+    return (tensor.float() * cos + rotated.float() * sin).to(tensor.dtype)
+
+
+def _diffusers_rms_norm(tensor: torch.Tensor, weight: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
+    if weight.device != tensor.device or weight.dtype != tensor.dtype:
+        weight = weight.to(device=tensor.device, dtype=tensor.dtype)
+    return F.rms_norm(tensor, (tensor.shape[-1],), weight, eps)
+
+
+def _diffusers_native_attention(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    attn_mask: torch.Tensor | None = None,
+) -> torch.Tensor:
+    query, key, value = (item.permute(0, 2, 1, 3) for item in (query, key, value))
+    try:
+        output = F.scaled_dot_product_attention(
+            query=query,
+            key=key,
+            value=value,
+            attn_mask=attn_mask,
+            dropout_p=0.0,
+            is_causal=False,
+            enable_gqa=False,
+        )
+    except TypeError:
+        output = F.scaled_dot_product_attention(
+            query=query,
+            key=key,
+            value=value,
+            attn_mask=attn_mask,
+            dropout_p=0.0,
+            is_causal=False,
+        )
+    return output.permute(0, 2, 1, 3)
+
+
+def _rum_diffusers_double_block_forward(
+    self,
+    img: torch.Tensor,
+    txt: torch.Tensor,
+    vec,
+    pe: torch.Tensor,
+    attn_mask=None,
+    modulation_dims_img=None,
+    modulation_dims_txt=None,
+    transformer_options=None,
+):
+    if modulation_dims_img is not None or modulation_dims_txt is not None:
+        raise ValueError("RUM diffusers-match exact forward 暂不支持 reference/timestep-zero modulation。")
+    transformer_options = transformer_options or {}
+    if transformer_options.get("patches"):
+        raise ValueError("RUM diffusers-match exact forward 暂不支持 attention patches / LoRA patches。")
+
+    if self.modulation:
+        img_mod1, img_mod2 = self.img_mod(vec)
+        txt_mod1, txt_mod2 = self.txt_mod(vec)
+    else:
+        (img_mod1, img_mod2), (txt_mod1, txt_mod2) = vec
+
+    norm_img = self.img_norm1(img)
+    norm_img = (1 + img_mod1.scale) * norm_img + img_mod1.shift
+    norm_txt = self.txt_norm1(txt)
+    norm_txt = (1 + txt_mod1.scale) * norm_txt + txt_mod1.shift
+
+    hidden_size = self.hidden_size
+    img_query = _linear_split(self.img_attn.qkv, norm_img, 0, hidden_size)
+    img_key = _linear_split(self.img_attn.qkv, norm_img, hidden_size, hidden_size)
+    img_value = _linear_split(self.img_attn.qkv, norm_img, hidden_size * 2, hidden_size)
+    txt_query = _linear_split(self.txt_attn.qkv, norm_txt, 0, hidden_size)
+    txt_key = _linear_split(self.txt_attn.qkv, norm_txt, hidden_size, hidden_size)
+    txt_value = _linear_split(self.txt_attn.qkv, norm_txt, hidden_size * 2, hidden_size)
+
+    img_query = img_query.unflatten(-1, (self.num_heads, -1))
+    img_key = img_key.unflatten(-1, (self.num_heads, -1))
+    img_value = img_value.unflatten(-1, (self.num_heads, -1))
+    txt_query = txt_query.unflatten(-1, (self.num_heads, -1))
+    txt_key = txt_key.unflatten(-1, (self.num_heads, -1))
+    txt_value = txt_value.unflatten(-1, (self.num_heads, -1))
+
+    img_query = _diffusers_rms_norm(img_query, self.img_attn.norm.query_norm.weight)
+    img_key = _diffusers_rms_norm(img_key, self.img_attn.norm.key_norm.weight)
+    txt_query = _diffusers_rms_norm(txt_query, self.txt_attn.norm.query_norm.weight)
+    txt_key = _diffusers_rms_norm(txt_key, self.txt_attn.norm.key_norm.weight)
+
+    query = torch.cat((txt_query, img_query), dim=1)
+    key = torch.cat((txt_key, img_key), dim=1)
+    value = torch.cat((txt_value, img_value), dim=1)
+    rope = _diffusers_rope_from_comfy_pe(pe)
+    query = _diffusers_apply_rotary_emb(query, rope)
+    key = _diffusers_apply_rotary_emb(key, rope)
+
+    attn = _diffusers_native_attention(query, key, value, attn_mask=attn_mask).flatten(2, 3).to(query.dtype)
+    txt_attn, img_attn = attn.split_with_sizes((txt.shape[1], img.shape[1]), dim=1)
+    txt_attn = self.txt_attn.proj(txt_attn)
+    img_attn = self.img_attn.proj(img_attn)
+
+    img = img + img_mod1.gate * img_attn
+    norm_img = self.img_norm2(img)
+    norm_img = norm_img * (1 + img_mod2.scale) + img_mod2.shift
+    img = img + img_mod2.gate * self.img_mlp(norm_img)
+
+    txt = txt + txt_mod1.gate * txt_attn
+    norm_txt = self.txt_norm2(txt)
+    norm_txt = norm_txt * (1 + txt_mod2.scale) + txt_mod2.shift
+    txt = txt + txt_mod2.gate * self.txt_mlp(norm_txt)
+    return img, txt
+
+
+def _rum_diffusers_single_block_forward(
+    self,
+    x: torch.Tensor,
+    vec,
+    pe: torch.Tensor,
+    attn_mask=None,
+    modulation_dims=None,
+    transformer_options=None,
+) -> torch.Tensor:
+    if modulation_dims is not None:
+        raise ValueError("RUM diffusers-match exact forward 暂不支持 reference/timestep-zero modulation。")
+    transformer_options = transformer_options or {}
+    if transformer_options.get("patches"):
+        raise ValueError("RUM diffusers-match exact forward 暂不支持 attention patches / LoRA patches。")
+
+    if self.modulation:
+        mod, _ = self.modulation(vec)
+    else:
+        mod = vec
+
+    hidden_states = self.pre_norm(x)
+    hidden_states = (1 + mod.scale) * hidden_states + mod.shift
+    projected = self.linear1(hidden_states)
+    qkv, mlp = torch.split(projected, [3 * self.hidden_size, self.mlp_hidden_dim_first], dim=-1)
+    query, key, value = qkv.chunk(3, dim=-1)
+
+    query = query.unflatten(-1, (self.num_heads, -1))
+    key = key.unflatten(-1, (self.num_heads, -1))
+    value = value.unflatten(-1, (self.num_heads, -1))
+    query = _diffusers_rms_norm(query, self.norm.query_norm.weight)
+    key = _diffusers_rms_norm(key, self.norm.key_norm.weight)
+
+    rope = _diffusers_rope_from_comfy_pe(pe)
+    query = _diffusers_apply_rotary_emb(query, rope)
+    key = _diffusers_apply_rotary_emb(key, rope)
+    hidden_states = _diffusers_native_attention(query, key, value, attn_mask=attn_mask).flatten(2, 3).to(query.dtype)
+
+    mlp = self.mlp_act(mlp)
+    output = self.linear2(torch.cat((hidden_states, mlp), dim=-1))
+    return x + mod.gate * output
+
+
+def _rum_diffusers_final_layer_forward(self, x: torch.Tensor, vec: torch.Tensor, modulation_dims=None) -> torch.Tensor:
+    if modulation_dims is not None:
+        raise ValueError("RUM diffusers-match exact forward 暂不支持 reference/timestep-zero modulation。")
+    if vec.ndim != 2:
+        vec = vec.reshape(vec.shape[0], -1)
+
+    modulation = self.adaLN_modulation[1](self.adaLN_modulation[0](vec).to(x.dtype))
+    shift, scale = modulation.chunk(2, dim=1)
+    x = self.norm_final(x) * (1 + scale)[:, None, :] + shift[:, None, :]
+    return self.linear(x)
+
+
+@contextmanager
+def _diffusers_match_forward_patch(diffusion_model):
+    originals = []
+    try:
+        for block in getattr(diffusion_model, "double_blocks", []):
+            originals.append((block, block.forward))
+            block.forward = MethodType(_rum_diffusers_double_block_forward, block)
+        for block in getattr(diffusion_model, "single_blocks", []):
+            originals.append((block, block.forward))
+            block.forward = MethodType(_rum_diffusers_single_block_forward, block)
+        final_layer = getattr(diffusion_model, "final_layer", None)
+        if final_layer is not None:
+            originals.append((final_layer, final_layer.forward))
+            final_layer.forward = MethodType(_rum_diffusers_final_layer_forward, final_layer)
+        yield
+    finally:
+        for block, original_forward in reversed(originals):
+            block.forward = original_forward
 
 
 class RUMDiffusersTimestepWrapper:
@@ -191,8 +681,8 @@ class RUMDiffusersTimestepWrapper:
             def forward(self, ignored_embedding):
                 from comfy.ldm.flux.layers import timestep_embedding
 
-                diffusers_timestep = (timestep.to(diffusion_dtype) * 1000.0).to(dtype=diffusion_dtype)
-                embedding = timestep_embedding(diffusers_timestep / 1000.0, 256).to(
+                diffusers_timestep = (timestep.to(torch.float32) * 1000.0).to(dtype=diffusion_dtype)
+                embedding = timestep_embedding(diffusers_timestep, 256, time_factor=1.0).to(
                     device=diffusers_timestep.device,
                     dtype=diffusion_dtype,
                 )
@@ -200,9 +690,73 @@ class RUMDiffusersTimestepWrapper:
 
         diffusion_model.time_in = DiffusersTimeIn()
         try:
-            return apply_model(x, timestep, context, *args, **kwargs)
+            with _diffusers_match_forward_patch(diffusion_model):
+                return apply_model(x, timestep, context, *args, **kwargs)
         finally:
             diffusion_model.time_in = original_time_in
+
+
+
+def _condition_tensor(model_cond):
+    value = getattr(model_cond, "cond", model_cond)
+    return value
+
+
+def _predict_raw_noise(model, x, timestep, cond, model_options, branch: str):
+    import comfy.model_management
+    import comfy.patcher_extension
+    import comfy.samplers
+
+    area_cond = comfy.samplers.get_area_and_mult(cond, x, timestep)
+    if area_cond is None:
+        raise ValueError(f"RUM diffusers-match {branch} conditioning 当前 timestep 没有可用区域。")
+    if area_cond.area is not None:
+        raise ValueError("RUM diffusers-match raw-noise 路径暂不支持 area/mask conditioning；请用全图 conditioning 做对齐验证。")
+
+    diffusion_model = model.diffusion_model
+    diffusion_dtype = model.get_dtype_inference()
+    x_in = model.model_sampling.calculate_input(timestep, area_cond.input_x).to(diffusion_dtype)
+    device = x_in.device
+
+    conditioning = area_cond.conditioning
+    context = _condition_tensor(conditioning["c_crossattn"])
+    context = comfy.model_management.cast_to_device(context, device, diffusion_dtype)
+
+    transformer_options = model.current_patcher.apply_hooks(hooks=area_cond.hooks)
+    if "transformer_options" in model_options:
+        transformer_options = comfy.patcher_extension.merge_nested_dicts(
+            transformer_options,
+            model_options["transformer_options"],
+            copy_dict1=False,
+        )
+    if area_cond.patches is not None:
+        transformer_options["patches"] = comfy.patcher_extension.merge_nested_dicts(
+            transformer_options.get("patches", {}),
+            area_cond.patches,
+        )
+    transformer_options["cond_or_uncond"] = [0]
+    transformer_options["uuids"] = [area_cond.uuid]
+    transformer_options["sigmas"] = timestep
+    transformer_options["rum_diffusers_cfg_branch"] = branch
+
+    guidance = _condition_tensor(conditioning["guidance"]) if "guidance" in conditioning else None
+    timestep_in = ((timestep.to(torch.float32) * 1000.0).to(diffusion_dtype) / 1000.0).to(diffusion_dtype)
+
+    with torch.inference_mode(), _diffusers_match_forward_patch(diffusion_model):
+        model_output = diffusion_model(
+            x_in,
+            timestep_in,
+            context=context,
+            control=area_cond.control,
+            transformer_options=transformer_options,
+            guidance=guidance,
+        )
+
+    if len(model_output) > 1 and not torch.is_tensor(model_output):
+        from comfy import utils
+
+        model_output, _ = utils.pack_latents(model_output)
+    return model_output
 
 
 
@@ -218,9 +772,84 @@ def create_diffusers_cfg_guider(model, positive, negative, cfg: float):
         return options
 
     class RUMDiffusersCFGGuider(comfy.samplers.CFGGuider):
+        def inner_sample(
+            self,
+            noise,
+            latent_image,
+            device,
+            sampler,
+            sigmas,
+            denoise_mask,
+            callback,
+            disable_pbar,
+            seed,
+            latent_shapes=None,
+        ):
+            match_config = getattr(self.model_patcher, "rum_diffusers_match_config", None)
+            if match_config is None:
+                return super().inner_sample(
+                    noise,
+                    latent_image,
+                    device,
+                    sampler,
+                    sigmas,
+                    denoise_mask,
+                    callback,
+                    disable_pbar,
+                    seed,
+                    latent_shapes=latent_shapes,
+                )
+
+            original_extra_conds = self.inner_model.extra_conds
+            token_policy = RUMDiffusersMatchTokenPolicy(
+                match_config["base_text_tokens"],
+                match_config["extra_text_tokens"],
+            )
+            self.inner_model.extra_conds = RUMDiffusersMatchExtraConds(
+                original_extra_conds,
+                token_policy,
+                disable_guidance=match_config.get("disable_guidance", True),
+            )
+            try:
+                return super().inner_sample(
+                    noise,
+                    latent_image,
+                    device,
+                    sampler,
+                    sigmas,
+                    denoise_mask,
+                    callback,
+                    disable_pbar,
+                    seed,
+                    latent_shapes=latent_shapes,
+                )
+            finally:
+                self.inner_model.extra_conds = original_extra_conds
+
         def predict_noise(self, x, timestep, model_options={}, seed=None):
             positive_cond = self.conds.get("positive", None)
             negative_cond = self.conds.get("negative", None)
+
+            if model_options.get("rum_diffusers_return_raw_noise", False):
+                positive_out = _predict_raw_noise(
+                    self.inner_model,
+                    x,
+                    timestep,
+                    positive_cond[0],
+                    model_options,
+                    "positive",
+                )
+                if negative_cond is None or self.cfg <= 1.0:
+                    return positive_out
+                negative_out = _predict_raw_noise(
+                    self.inner_model,
+                    x,
+                    timestep,
+                    negative_cond[0],
+                    model_options,
+                    "negative",
+                )
+                return negative_out + self.cfg * (positive_out - negative_out)
 
             positive_out = comfy.samplers.calc_cond_batch(
                 self.inner_model,
@@ -256,6 +885,190 @@ def create_diffusers_cfg_guider(model, positive, negative, cfg: float):
     guider.set_cfg(float(cfg))
     return guider
 
+
+class RUMDiffusersEulerSampler:
+    def max_denoise(self, model_wrap, sigmas):
+        max_sigma = float(model_wrap.inner_model.model_sampling.sigma_max)
+        sigma = float(sigmas[0])
+        import math
+
+        return math.isclose(max_sigma, sigma, rel_tol=1e-05) or sigma > max_sigma
+
+    def sample(
+        self,
+        model_wrap,
+        sigmas,
+        extra_args,
+        callback,
+        noise,
+        latent_image=None,
+        denoise_mask=None,
+        disable_pbar=False,
+    ):
+        import torch
+        from tqdm.auto import trange
+
+        if latent_image is None:
+            latent_image = torch.zeros_like(noise)
+
+        if denoise_mask is not None:
+            raise ValueError("RUM diffusers-match sampler 暂不支持 denoise_mask；请用全图采样来做对齐验证。")
+
+        model_dtype = getattr(model_wrap.inner_model, "get_dtype_inference", lambda: noise.dtype)()
+        x = model_wrap.inner_model.model_sampling.noise_scaling(
+            sigmas[0],
+            noise,
+            latent_image,
+            self.max_denoise(model_wrap, sigmas),
+        ).to(dtype=model_dtype)
+
+        model_options = extra_args.get("model_options", {})
+        seed = extra_args.get("seed", None)
+        total_steps = len(sigmas) - 1
+        step_iter = trange(total_steps, disable=disable_pbar)
+        for i in step_iter:
+            sigma = sigmas[i]
+            sigma_next = sigmas[i + 1]
+            sigma_in = sigma.expand(x.shape[0]).to(device=x.device)
+            step_model_options = model_options.copy()
+            step_model_options["rum_diffusers_return_raw_noise"] = True
+            noise_pred = model_wrap(x, sigma_in, model_options=step_model_options, seed=seed)
+
+            dt = (sigma_next - sigma).to(device=x.device, dtype=torch.float32)
+            x = (x.float() + dt * noise_pred).to(dtype=noise_pred.dtype)
+
+            if callback is not None:
+                denoised = x.float() - noise_pred.float() * sigma.to(device=x.device, dtype=torch.float32)
+                callback(i, denoised, x, total_steps)
+
+        return model_wrap.inner_model.model_sampling.inverse_noise_scaling(sigmas[-1], x.float())
+
+
+def create_diffusers_euler_sampler():
+    return RUMDiffusersEulerSampler()
+
+
+def diffusers_flux2_sigmas(*, steps: int, width: int, height: int) -> torch.Tensor:
+    if steps <= 0:
+        raise ValueError("steps 必须大于 0。")
+    if width <= 0 or height <= 0:
+        raise ValueError("width/height 必须大于 0。")
+
+    import numpy as np
+
+    image_seq_len = round(width * height / (16 * 16))
+    mu = _diffusers_compute_empirical_mu(image_seq_len=image_seq_len, num_steps=steps)
+    sigmas = np.linspace(1.0, 1.0 / int(steps), int(steps), dtype=np.float32)
+    sigmas = np.exp(mu) / (np.exp(mu) + (1 / sigmas - 1))
+    sigmas = torch.from_numpy(sigmas).to(dtype=torch.float32)
+    return torch.cat([sigmas, sigmas.new_zeros(1)])
+
+
+def _diffusers_compute_empirical_mu(*, image_seq_len: int, num_steps: int) -> float:
+    # Matches diffusers Flux2KleinPipeline.compute_empirical_mu, not ComfyUI's Flux2Scheduler approximation.
+    a1, b1 = 8.73809524e-05, 1.89833333
+    a2, b2 = 0.00016927, 0.45666666
+
+    if image_seq_len > 4300:
+        return float(a2 * image_seq_len + b2)
+
+    m_200 = a2 * image_seq_len + b2
+    m_10 = a1 * image_seq_len + b1
+    a = (m_200 - m_10) / 190.0
+    b = m_200 - 200.0 * a
+    return float(a * num_steps + b)
+
+
+def _diffusers_time_shift_exponential(mu: float, sigma: float, timesteps: torch.Tensor) -> torch.Tensor:
+    return torch.exp(torch.tensor(mu, dtype=timesteps.dtype, device=timesteps.device)) / (
+        torch.exp(torch.tensor(mu, dtype=timesteps.dtype, device=timesteps.device))
+        + (1 / timesteps - 1) ** sigma
+    )
+
+
+
+def _unpatchify_flux2_latents(latents: torch.Tensor) -> torch.Tensor:
+    batch_size, channels, height, width = latents.shape
+    latents = latents.reshape(batch_size, channels // 4, 2, 2, height, width)
+    latents = latents.permute(0, 1, 4, 2, 5, 3)
+    return latents.reshape(batch_size, channels // 4, height * 2, width * 2)
+
+
+def _resolve_vae_first_stage(vae):
+    first_stage = getattr(vae, "first_stage_model", None)
+    if first_stage is None:
+        raise ValueError("当前 VAE 对象没有 first_stage_model，不能执行 RUM diffusers-exact decode。")
+    return first_stage
+
+
+def _load_diffusers_flux2_vae(flux2_model_path: str | Path, dtype: torch.dtype) -> nn.Module:
+    from diffusers.models.autoencoders.autoencoder_kl_flux2 import AutoencoderKLFlux2
+
+    model_path = str(Path(flux2_model_path).expanduser())
+    cache_key = (model_path, str(dtype))
+    diffusers_vae = _DIFFUSERS_FLUX2_VAE_CACHE.get(cache_key)
+    if diffusers_vae is None:
+        diffusers_vae = AutoencoderKLFlux2.from_pretrained(model_path, subfolder="vae", torch_dtype=dtype)
+        diffusers_vae.requires_grad_(False)
+        diffusers_vae.eval()
+        _DIFFUSERS_FLUX2_VAE_CACHE[cache_key] = diffusers_vae
+    return diffusers_vae
+
+
+@torch.inference_mode()
+def _decode_with_diffusers_flux2_vae(latent: torch.Tensor, flux2_model_path: str | Path, dtype: torch.dtype) -> torch.Tensor:
+    import comfy.model_management
+    from diffusers.pipelines.flux2.pipeline_flux2 import Flux2ImageProcessor
+
+    device = comfy.model_management.vae_device()
+    offload_device = comfy.model_management.vae_offload_device()
+    diffusers_vae = _load_diffusers_flux2_vae(flux2_model_path, dtype)
+    diffusers_vae.to(device)
+
+    latents = latent.to(device=device, dtype=dtype)
+    bn_mean = diffusers_vae.bn.running_mean.view(1, -1, 1, 1).to(device=latents.device, dtype=latents.dtype)
+    bn_std = torch.sqrt(
+        diffusers_vae.bn.running_var.view(1, -1, 1, 1).to(device=latents.device, dtype=latents.dtype)
+        + float(diffusers_vae.config.batch_norm_eps)
+    )
+    latents = _unpatchify_flux2_latents(latents * bn_std + bn_mean)
+    decoded = diffusers_vae.decode(latents, return_dict=False)[0]
+
+    processor = Flux2ImageProcessor(vae_scale_factor=16)
+    images_np = processor.postprocess(decoded, output_type="np")
+    images_uint8 = (images_np * 255).round().astype("uint8")
+    images = torch.from_numpy(images_uint8).to(dtype=torch.float32).div_(255.0)
+    diffusers_vae.to(offload_device)
+    return images
+
+
+@torch.inference_mode()
+def decode_diffusers_exact_flux2_latent(vae, samples, flux2_model_path: str | Path | None = None):
+    import comfy.model_management
+
+    latent = samples["samples"] if isinstance(samples, dict) else samples
+    if latent.is_nested:
+        latent = latent.unbind()[0]
+
+    dtype = getattr(vae, "vae_dtype", torch.bfloat16) if vae is not None else torch.bfloat16
+    if flux2_model_path is not None and str(flux2_model_path).strip():
+        return _decode_with_diffusers_flux2_vae(latent, str(flux2_model_path).strip(), dtype)
+
+    first_stage = _resolve_vae_first_stage(vae)
+    device = comfy.model_management.vae_device()
+    offload_device = comfy.model_management.vae_offload_device()
+    memory_used = vae.memory_used_decode(latent.shape, dtype=dtype)
+    comfy.model_management.load_models_gpu([vae.patcher], memory_required=memory_used)
+
+    latents = latent.to(device=device, dtype=dtype)
+    if not hasattr(first_stage, "bn"):
+        raise ValueError("当前 VAE 不是 FLUX.2 diffusers VAE：找不到 batch norm 参数 bn。")
+
+    first_stage = first_stage.to(device)
+    decoded = first_stage.decode(latents)
+    images = vae.process_output(decoded.to(torch.float32)).movedim(1, -1)
+    first_stage.to(offload_device)
+    return images
 
 def load_rum_native_model(checkpoint_path: str | Path, *, base_text_tokens: int = 200):
     import comfy.sd
