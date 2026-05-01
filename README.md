@@ -1,7 +1,5 @@
 # ComfyUI-RUM
 
-![ComfyUI-RUM preview](assets/rum-preview.png)
-
 这是给 [RimoChan/RUM](https://github.com/RimoChan/RUM) 的 **ComfyUI 原生节点适配器**，目标模型是 `RUM-FLUX.2-klein-4B-preview`。RUM 的原始想法、模型和参考推理代码都来自 RimoChan 的项目。
 
 主分支是 **native ComfyUI 版**：模型加载、conditioning、latent、sampler、VAE decode 都尽量走 ComfyUI 自己的系统；旧的 diffusers 一体式版本保留在 [`diffusers-pipeline`](https://github.com/peter119lee/ComfyUI-RUM/tree/diffusers-pipeline) 分支。
