@@ -80,7 +80,8 @@
       },
       "widgets_values": [
         200,
-        77
+        77,
+        true
       ]
     },
     {
@@ -376,7 +377,7 @@
     },
     {
       "id": 14,
-      "type": "KSamplerSelect",
+      "type": "RUMFlux2DiffusersEulerSampler",
       "pos": [
         1420,
         260
@@ -399,11 +400,10 @@
         }
       ],
       "properties": {
-        "Node name for S&R": "KSamplerSelect"
+        "Node name for S&R": "RUMFlux2DiffusersEulerSampler"
       },
-      "widgets_values": [
-        "euler"
-      ]
+      "widgets_values": [],
+      "title": "Diffusers-match Euler sampler (BF16 latent step)"
     },
     {
       "id": 15,
@@ -578,7 +578,7 @@
     },
     {
       "id": 19,
-      "type": "VAEDecode",
+      "type": "RUMFlux2DiffusersExactVAEDecode",
       "pos": [
         2100,
         520
@@ -612,9 +612,11 @@
         }
       ],
       "properties": {
-        "Node name for S&R": "VAEDecode"
+        "Node name for S&R": "RUMFlux2DiffusersExactVAEDecode"
       },
-      "widgets_values": []
+      "widgets_values": [
+        "L:/Antigravitiy code/RUM/models/FLUX.2-klein-base-4B"
+      ]
     },
     {
       "id": 20,

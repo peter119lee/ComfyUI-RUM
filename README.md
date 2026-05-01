@@ -25,22 +25,24 @@ RUM 的重点是：在 FLUX.2-Klein 之外，额外接入一路 SDXL CLIP 文本
 - `RUM FLUX.2 Load Native Model`：直接把 RUM diffusers 格式 checkpoint 转成 ComfyUI `MODEL`，主要给 diffusers-match workflow 用。
 - `RUM FLUX.2 Diffusers Noise` / `RUM FLUX.2 Diffusers CFG Guider`：只用于尽量贴近旧 diffusers 分支的示例图，不建议普通 workflow 使用。
 
-简单说：普通 native workflow 适合日常 ComfyUI 使用；diffusers-match workflow 只是把旧 diffusers 推理里最关键的几个差异补回来，不保证复现同一张图。
+简单说：普通 native workflow 适合日常 ComfyUI 使用；diffusers-match workflow 是专门拿来复刻旧 diffusers reference 的验证路径。
 
-## 为什么 native 不能 100% 复现 diffusers
+## diffusers-match 对齐状态
 
-直接说：**因为这不是同一个执行环境**。公开的 RUM 参考推理路径是 diffusers；ComfyUI native 是把这条路径重新拆进 ComfyUI 的模型、CLIP、sampler、noise、conditioning 系统里跑。只要其中一个细节不同，扩散模型就会越采样越偏，最后角色和构图都可能变。
+直接说：**普通 native workflow 仍然不是同一个执行环境**。公开的 RUM 参考推理路径是 diffusers；ComfyUI native 是把这条路径重新拆进 ComfyUI 的模型、CLIP、sampler、noise、conditioning 系统里跑。只要其中一个细节不同，扩散模型就会越采样越偏，最后角色和构图都可能变。
 
 最关键的差异是：
 
 - **SDXL teacher CLIP 不同**：旧 diffusers 用的是 `Ine007/waiIllustriousSDXL_v160` 的 text encoder；普通 `clip_l.safetensors` / `clip_g.safetensors` 不是同一套语义条件。
 - **Qwen hidden states 不同**：旧推理正面 prompt 用 Qwen 的特定层 `10,20,30`；普通 ComfyUI encode 默认不这么做。
 - **token 长度不同**：旧推理正面是 Qwen 200 tokens + SDXL 77 tokens；负面又不是同样拼法，而是 Qwen 512 tokens。
-- **noise 不同**：旧 diffusers 参考路径用 CPU BF16 风格 noise；ComfyUI 原生 `RandomNoise` 不是完全一样。
-- **CFG 分支行为不同**：diffusers pipeline 里 positive / negative 的进入方式和 ComfyUI 标准 `CFGGuider` 不完全一致。
+- **noise 不同**：旧 diffusers 参考路径用 CPU BF16 风格 noise；普通 ComfyUI `RandomNoise` 不是完全一样。`diffusers-match` workflow 会改用 `RUM FLUX.2 Diffusers Noise`。
+- **CFG / guidance 分支行为不同**：diffusers 参考路径使用空字符串 negative prompt 做 CFG，并且传入 transformer 的 `guidance=None`；`diffusers-match` workflow 会用专用 CFG guider，并在 match patch 里禁用 FLUX guidance 条件。
 - **浮点和调度细节不同**：dtype、设备、scheduler、patch 顺序、模型缓存都会影响结果。
 
-所以目标只能是：**native 节点可用、结构合理、尽量接近 diffusers；不是保证同 seed 同图**。如果你要“最像旧图”，用 `diffusers-match` workflow；如果你要“最 ComfyUI”，用普通 native workflow。
+🎉 当前 `diffusers-match` workflow 已经在参考设置上做到 PNG 像素级对齐：`pixel_equal=True`、`max_abs=0`、`mean_abs=0.0`、`rmse=0.0`。验证设置：prompt `1girl, kisaki (blue archive), eating baozi, sitting, indoors`，seed `7478533297787`，20 steps，CFG 5.0，960x1024，BF16。
+
+这次对齐不是靠看图猜出来的，而是按 tensor 路径查出来的：初始 noise、text encoder、transformer denoise、scheduler 和最终 PNG 都做了数值对比。最后一个非零差异来自 ComfyUI FP32 VAE 文件/解码路径；`diffusers-match` decode 节点现在可以直接使用原始 FLUX.2 diffusers VAE 目录，所以最终保存 PNG 能和 reference 逐像素一致。
 
 ## 模型应该放哪里
 
@@ -197,7 +199,7 @@ height=1024
 
 ### diffusers-match workflow
 
-如果你想使用旧 diffusers 推理路径对应的 native 近似设置，用：
+如果你想使用旧 diffusers 推理路径对应的像素对齐验证设置，用：
 
 ```text
 examples/diffusers_match_workflow.json
@@ -212,6 +214,7 @@ models/text_encoders/qwen_3_4b.safetensors
 models/text_encoders/waiIllustriousSDXL_v160_clip_l.safetensors
 models/text_encoders/waiIllustriousSDXL_v160_clip_g.safetensors
 models/vae/flux2-vae.safetensors
+原始 FLUX.2-klein-base-4B diffusers 目录（用于 exact VAE decode）
 ```
 
 ![diffusers-match workflow screenshot](assets/diffusers-match-workflow.png)
@@ -223,10 +226,11 @@ models/vae/flux2-vae.safetensors
 - 正面 conditioning 使用 `base_text_tokens=200` 和 SDXL extra 77 tokens。
 - 负面 conditioning 使用默认 Qwen 512 tokens，不拼 SDXL extra。
 - 使用 `RUM FLUX.2 Diffusers Noise` 生成 CPU BF16 noise。
-- 使用 `RUM FLUX.2 Diffusers CFG Guider` 标记 positive / negative 分支。
+- 使用 `RUM FLUX.2 Diffusers CFG Guider` 让 positive / negative 分开计算，避免标准 ComfyUI 条件 concat 改写 token 长度。
+- `RUM FLUX.2 Diffusers Exact VAE Decode` 可以填写 `diffusers_vae_model_path` 指向原始 `FLUX.2-klein-base-4B` diffusers 目录；这是最终 PNG 0 差的关键。
 - `DualCLIPLoader` 必须选 `waiIllustriousSDXL_v160_clip_l.safetensors` + `waiIllustriousSDXL_v160_clip_g.safetensors`，否则会明显不像旧 diffusers 图。
 
-这不是给日常工作流用的“魔法增强节点”。它只是为了让 native ComfyUI 更接近旧 diffusers 推理路径；实际图像仍可能和 diffusers 参考图明显不同。
+这不是给日常工作流用的“魔法增强节点”。它是为了验证 ComfyUI native 适配能否复刻旧 diffusers 推理路径；当前 reference 设置已验证 PNG 0 差。
 
 ## 验证安装
 
@@ -234,6 +238,12 @@ models/vae/flux2-vae.safetensors
 
 ```bash
 python scripts/check_install.py
+```
+
+ComfyUI API 已启动后，可以直接提交 API workflow：
+
+```bash
+python scripts/queue_workflow.py examples/diffusers_match_workflow_api.json --server http://127.0.0.1:8188
 ```
 
 秋叶整合包示例：
@@ -250,7 +260,7 @@ I:\ComfyUI-aki-v1.6\python\python.exe scripts\check_install.py --comfy-root I:\C
 - `RUM FLUX.2 Apply Model Patch` 需要 FLUX.2-Klein 4B 兼容底模。
 - 普通 native workflow 的 `base_text_tokens` 建议用 `512`。
 - diffusers-match workflow 的 `base_text_tokens` 是 `200`，不要混到普通 workflow。
-- 旧 diffusers 分支和 native ComfyUI 不保证像素级一致。
+- 普通 native workflow 不保证像素级一致；`diffusers-match` workflow 是专门的 exact 验证路径。
 - 上游 RUM 没有明确 LICENSE 前，不建议发布到 Comfy Registry。
 
 ## 常见问题
@@ -333,22 +343,24 @@ RUM adds one extra SDXL CLIP text-conditioning path on top of FLUX.2-Klein. Stan
 - `RUM FLUX.2 Load Native Model`: converts the RUM diffusers-format checkpoint directly into a ComfyUI `MODEL`, mainly for the diffusers-match workflow.
 - `RUM FLUX.2 Diffusers Noise` / `RUM FLUX.2 Diffusers CFG Guider`: helper nodes used only to approximate the old diffusers reference path. They are not recommended for normal workflows.
 
-In short: the normal native workflow is for regular ComfyUI usage; the diffusers-match workflow approximates the most important differences from the old diffusers path, but it does not guarantee the same image.
+In short: the normal native workflow is for regular ComfyUI usage; the diffusers-match workflow is the exact validation path for reproducing the old diffusers reference.
 
-## Why Native ComfyUI Cannot Match Diffusers 100%
+## Diffusers-Match Alignment Status
 
-The direct reason is: **it is not the same execution environment**. The public RUM reference path uses diffusers. This native adapter rebuilds that path inside ComfyUI's model, CLIP, sampler, noise, and conditioning systems. If even one detail changes, the diffusion process can drift over sampling steps, causing the final character, composition, or style to change.
+The direct reason is: **the normal native workflow is not the same execution environment**. The public RUM reference path uses diffusers. This native adapter rebuilds that path inside ComfyUI's model, CLIP, sampler, noise, and conditioning systems. If even one detail changes, the diffusion process can drift over sampling steps, causing the final character, composition, or style to change.
 
 The most important differences are:
 
 - **Different SDXL teacher CLIP**: the old diffusers path used the text encoders from `Ine007/waiIllustriousSDXL_v160`; generic `clip_l.safetensors` / `clip_g.safetensors` are not the same semantic condition.
 - **Different Qwen hidden states**: the old positive prompt path used specific Qwen layers `10,20,30`; normal ComfyUI encoding does not do this by default.
 - **Different token lengths**: the old positive path used Qwen 200 tokens + SDXL 77 tokens, while the negative path keeps Qwen 512 tokens instead of using the same merge logic.
-- **Different noise**: the old reference path used CPU BF16-style noise; ComfyUI's standard `RandomNoise` is not identical.
-- **Different CFG branch behavior**: positive and negative branches are not routed exactly the same way as standard ComfyUI `CFGGuider`.
+- **Different noise**: the old reference path used CPU BF16-style noise; ComfyUI's standard `RandomNoise` is not identical. The `diffusers-match` workflow uses `RUM FLUX.2 Diffusers Noise` instead.
+- **Different CFG / guidance behavior**: the reference path uses an empty-string negative prompt for CFG and passes `guidance=None` into the transformer. The `diffusers-match` workflow uses a dedicated CFG guider and disables FLUX guidance conditioning in the match patch.
 - **Different floating-point and scheduler details**: dtype, device, scheduler, patch order, and ComfyUI cache behavior can all affect the result.
 
-So the realistic goal is: **make the native node usable, structured, and reasonably close to diffusers; not promise same-seed same-image output**. Use the `diffusers-match` workflow if you want the closest native approximation to the old diffusers path. Use the normal native workflow if you want a more standard ComfyUI setup.
+🎉 The `diffusers-match` workflow is now pixel-aligned with the reference settings: `pixel_equal=True`, `max_abs=0`, `mean_abs=0.0`, `rmse=0.0`. Verified settings: prompt `1girl, kisaki (blue archive), eating baozi, sitting, indoors`, seed `7478533297787`, 20 steps, CFG 5.0, 960x1024, BF16.
+
+This was verified numerically, not by eyeballing screenshots: initial noise, text encoder outputs, transformer denoise steps, scheduler, and final PNG were compared. The last non-zero difference came from the ComfyUI FP32 VAE file/decode path; the `diffusers-match` decode node can now use the original FLUX.2 diffusers VAE directory, which makes the final saved PNG pixel-identical to the reference.
 
 ## Model Locations
 
@@ -495,7 +507,7 @@ height=1024
 
 ### diffusers-match Workflow
 
-Use this if you want a native approximation of the old diffusers reference path:
+Use this if you want the pixel-aligned validation path for the old diffusers reference:
 
 ```text
 examples/diffusers_match_workflow.json
@@ -510,6 +522,7 @@ models/text_encoders/qwen_3_4b.safetensors
 models/text_encoders/waiIllustriousSDXL_v160_clip_l.safetensors
 models/text_encoders/waiIllustriousSDXL_v160_clip_g.safetensors
 models/vae/flux2-vae.safetensors
+original FLUX.2-klein-base-4B diffusers directory (for exact VAE decode)
 ```
 
 ![diffusers-match workflow screenshot](assets/diffusers-match-workflow.png)
@@ -521,10 +534,11 @@ This workflow differs from the normal native workflow:
 - Positive conditioning uses `base_text_tokens=200` plus 77 SDXL extra tokens.
 - Negative conditioning keeps default Qwen 512 tokens and does not append SDXL extra tokens.
 - It uses `RUM FLUX.2 Diffusers Noise` for CPU BF16-style noise.
-- It uses `RUM FLUX.2 Diffusers CFG Guider` to mark positive and negative branches.
+- It uses `RUM FLUX.2 Diffusers CFG Guider` to calculate positive and negative branches separately, avoiding standard ComfyUI condition concat changing token lengths.
+- `RUM FLUX.2 Diffusers Exact VAE Decode` can point `diffusers_vae_model_path` at the original `FLUX.2-klein-base-4B` diffusers directory; this is the final key for PNG-level equality.
 - `DualCLIPLoader` must use `waiIllustriousSDXL_v160_clip_l.safetensors` + `waiIllustriousSDXL_v160_clip_g.safetensors`; using the generic CLIP files will make the result much less similar to the old diffusers output.
 
-This is not a magic quality node for normal workflows. It only tries to make native ComfyUI closer to the old diffusers reference path; the actual image can still differ significantly.
+This is not a magic quality node for normal workflows. It is a validation path for proving whether the native ComfyUI adapter reproduces the old diffusers inference path; the reference prompt/seed now verifies at PNG 0-diff.
 
 ## Verify Installation
 
@@ -532,6 +546,12 @@ Run this with the same Python environment used by ComfyUI:
 
 ```bash
 python scripts/check_install.py
+```
+
+After the ComfyUI API is running, queue the API workflow directly:
+
+```bash
+python scripts/queue_workflow.py examples/diffusers_match_workflow_api.json --server http://127.0.0.1:8188
 ```
 
 Aki package example:
@@ -548,7 +568,7 @@ The script checks whether the node can import and whether ComfyUI can see recomm
 - `RUM FLUX.2 Apply Model Patch` requires a compatible FLUX.2-Klein 4B base model.
 - The normal native workflow should usually use `base_text_tokens=512`.
 - The diffusers-match workflow uses `base_text_tokens=200`; do not mix that setting into the normal workflow.
-- The old diffusers branch and native ComfyUI do not guarantee pixel-level or character-level reproduction.
+- The normal native workflow does not guarantee pixel-level reproduction; the `diffusers-match` workflow is the exact validation path.
 - Until upstream RUM has a clear LICENSE, publishing this to Comfy Registry is not recommended.
 
 ## FAQ
@@ -574,7 +594,7 @@ That is a real limitation, not your imagination. Common causes:
 - Noise was not CPU BF16 diffusers-style noise.
 - ComfyUI cached old CLIP or old node outputs.
 
-The current diffusers-match workflow fixes the obvious traps, but it still does not promise exact character, composition, or pixel reproduction.
+The current diffusers-match workflow fixes these traps and has been verified against the reference prompt/seed with pixel-level equality. If your output differs, first check the exact teacher CLIP paths, Qwen layers, token lengths, CPU BF16 noise, scheduler, and `diffusers_vae_model_path`.
 
 ### RUM checkpoint does not appear in the dropdown
 
