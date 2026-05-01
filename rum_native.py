@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import re
-import gc
 from contextlib import contextmanager
 from pathlib import Path
 from types import MethodType
@@ -14,251 +13,6 @@ from safetensors.torch import load_file
 
 
 _DIFFUSION_PREFIX = "diffusion_model."
-_TEXT_ENCODER_CACHE: dict[tuple[str, ...], "RUMDiffusersExactTextEncoder"] = {}
-_DIFFUSERS_FLUX2_VAE_CACHE: dict[tuple[str, str], nn.Module] = {}
-
-
-class RUMDiffusersExactTextEncoder:
-    def __init__(
-        self,
-        *,
-        flux2_model_path: str | Path,
-        sdxl_text_model_path: str | Path,
-        device: str,
-        qwen_dtype: torch.dtype,
-        sdxl_dtype: torch.dtype,
-    ):
-        from diffusers import Flux2KleinPipeline
-        from transformers import CLIPTextModel, CLIPTextModelWithProjection, CLIPTokenizer
-
-        self.device = torch.device(device)
-        self.qwen_dtype = qwen_dtype
-        self.sdxl_dtype = sdxl_dtype
-        flux2_path = Path(flux2_model_path).expanduser()
-        sdxl_path = Path(sdxl_text_model_path).expanduser()
-        self.flux2_model_path = str(flux2_path)
-        self.sdxl_text_model_path = str(sdxl_path)
-
-        qwen_pipe = Flux2KleinPipeline.from_pretrained(
-            str(flux2_path),
-            transformer=None,
-            vae=None,
-            torch_dtype=qwen_dtype,
-        )
-        self.qwen_tokenizer = qwen_pipe.tokenizer
-        self.qwen_text_encoder = qwen_pipe.text_encoder
-        self.qwen_text_encoder.to(self.device)
-        self.qwen_text_encoder.requires_grad_(False)
-        self.qwen_text_encoder.eval()
-        qwen_pipe.tokenizer = None
-        qwen_pipe.text_encoder = None
-        del qwen_pipe
-
-        self.sdxl_tokenizer = CLIPTokenizer.from_pretrained(str(sdxl_path), subfolder="tokenizer")
-        self.sdxl_tokenizer_2 = CLIPTokenizer.from_pretrained(str(sdxl_path), subfolder="tokenizer_2")
-        self.sdxl_text_encoder = CLIPTextModel.from_pretrained(
-            str(sdxl_path),
-            subfolder="text_encoder",
-            torch_dtype=sdxl_dtype,
-        )
-        self.sdxl_text_encoder_2 = CLIPTextModelWithProjection.from_pretrained(
-            str(sdxl_path),
-            subfolder="text_encoder_2",
-            torch_dtype=sdxl_dtype,
-        )
-        for module in (self.sdxl_text_encoder, self.sdxl_text_encoder_2):
-            module.to(self.device, dtype=sdxl_dtype)
-            module.requires_grad_(False)
-            module.eval()
-
-    @torch.inference_mode()
-    def encode(
-        self,
-        *,
-        prompt: str,
-        negative_prompt: str,
-        guidance: float | None,
-        base_text_tokens: int,
-        negative_text_tokens: int,
-        extra_text_tokens: int,
-        positive_qwen_layers: Iterable[int],
-        negative_qwen_layers: Iterable[int],
-    ):
-        positive_qwen_layers = tuple(int(layer) for layer in positive_qwen_layers)
-        negative_qwen_layers = tuple(int(layer) for layer in negative_qwen_layers)
-        if len(positive_qwen_layers) != 3:
-            raise ValueError("positive_qwen_layers 必须正好包含 3 个层号，例如 10,20,30。")
-        if len(negative_qwen_layers) != 3:
-            raise ValueError("negative_qwen_layers 必须正好包含 3 个层号，例如 9,18,27。")
-
-        positive_qwen = self._encode_qwen(
-            prompt=prompt,
-            max_sequence_length=base_text_tokens,
-            hidden_states_layers=positive_qwen_layers,
-        )
-        positive_sdxl = self._encode_sdxl(prompt)[:, :extra_text_tokens]
-        positive_sdxl = positive_sdxl.to(device=positive_qwen.device, dtype=positive_qwen.dtype)
-        positive_sdxl = _fit_last_dim(positive_sdxl, positive_qwen.shape[-1])
-
-        positive = torch.cat([positive_qwen, positive_sdxl], dim=1).to(device="cpu", dtype=torch.float32)
-        positive_meta = {
-            "rum_base_text_tokens": int(base_text_tokens),
-            "rum_extra_text_tokens": int(extra_text_tokens),
-        }
-        if guidance is not None:
-            positive_meta["guidance"] = float(guidance)
-
-        negative = self._encode_qwen(
-            prompt=negative_prompt,
-            max_sequence_length=negative_text_tokens,
-            hidden_states_layers=negative_qwen_layers,
-        ).to(device="cpu", dtype=torch.float32)
-
-        return [[positive, positive_meta]], [[negative, {}]]
-
-    def _encode_qwen(
-        self,
-        *,
-        prompt: str,
-        max_sequence_length: int,
-        hidden_states_layers: Iterable[int],
-    ) -> torch.Tensor:
-        messages = [{"role": "user", "content": prompt}]
-        text = self.qwen_tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True,
-            enable_thinking=False,
-        )
-        inputs = self.qwen_tokenizer(
-            text,
-            return_tensors="pt",
-            padding="max_length",
-            truncation=True,
-            max_length=int(max_sequence_length),
-        )
-        output = self.qwen_text_encoder(
-            input_ids=inputs["input_ids"].to(self.device),
-            attention_mask=inputs["attention_mask"].to(self.device),
-            output_hidden_states=True,
-            use_cache=False,
-        )
-        stacked = torch.stack([output.hidden_states[int(layer)] for layer in hidden_states_layers], dim=1)
-        stacked = stacked.to(dtype=self.qwen_dtype, device=self.device)
-        batch_size, layer_count, seq_len, hidden_dim = stacked.shape
-        return stacked.permute(0, 2, 1, 3).reshape(batch_size, seq_len, layer_count * hidden_dim)
-
-    def _encode_sdxl(self, prompt: str) -> torch.Tensor:
-        prompt_embeds = []
-        for tokenizer, text_encoder in (
-            (self.sdxl_tokenizer, self.sdxl_text_encoder),
-            (self.sdxl_tokenizer_2, self.sdxl_text_encoder_2),
-        ):
-            text_inputs = tokenizer(
-                [prompt],
-                padding="max_length",
-                max_length=tokenizer.model_max_length,
-                truncation=True,
-                return_tensors="pt",
-            )
-            output = text_encoder(
-                text_inputs.input_ids.to(self.device),
-                output_hidden_states=True,
-            )
-            prompt_embeds.append(output.hidden_states[-2].to(dtype=self.sdxl_dtype, device=self.device))
-        return torch.cat(prompt_embeds, dim=-1)
-
-
-def encode_diffusers_exact_rum_text(
-    *,
-    prompt: str,
-    negative_prompt: str = "",
-    flux2_model_path: str | Path,
-    sdxl_text_model_path: str | Path,
-    device: str = "cuda",
-    qwen_dtype: str = "bfloat16",
-    sdxl_dtype: str = "float16",
-    unload_after_encode: bool = False,
-    guidance: float | None = None,
-    base_text_tokens: int = 200,
-    negative_text_tokens: int = 512,
-    extra_text_tokens: int = 77,
-    positive_qwen_layers: str | Iterable[int] = "10,20,30",
-    negative_qwen_layers: str | Iterable[int] = "9,18,27",
-):
-    resolved_device = _resolve_text_device(device)
-    qwen_torch_dtype = _resolve_dtype(qwen_dtype)
-    sdxl_torch_dtype = _resolve_dtype(sdxl_dtype)
-    positive_layers = _parse_qwen_layers(positive_qwen_layers)
-    negative_layers = _parse_qwen_layers(negative_qwen_layers)
-    cache_key = (
-        str(Path(flux2_model_path).expanduser().resolve()),
-        str(Path(sdxl_text_model_path).expanduser().resolve()),
-        resolved_device,
-        str(qwen_torch_dtype),
-        str(sdxl_torch_dtype),
-    )
-    encoder = _TEXT_ENCODER_CACHE.get(cache_key)
-    if encoder is None:
-        encoder = RUMDiffusersExactTextEncoder(
-            flux2_model_path=flux2_model_path,
-            sdxl_text_model_path=sdxl_text_model_path,
-            device=resolved_device,
-            qwen_dtype=qwen_torch_dtype,
-            sdxl_dtype=sdxl_torch_dtype,
-        )
-        _TEXT_ENCODER_CACHE[cache_key] = encoder
-
-    positive, negative = encoder.encode(
-        prompt=prompt,
-        negative_prompt=negative_prompt,
-        guidance=guidance,
-        base_text_tokens=base_text_tokens,
-        negative_text_tokens=negative_text_tokens,
-        extra_text_tokens=extra_text_tokens,
-        positive_qwen_layers=positive_layers,
-        negative_qwen_layers=negative_layers,
-    )
-    if unload_after_encode:
-        _TEXT_ENCODER_CACHE.pop(cache_key, None)
-        del encoder
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-    return positive, negative
-
-
-
-def _parse_qwen_layers(value: str | Iterable[int]) -> tuple[int, int, int]:
-    if isinstance(value, str):
-        layers = tuple(int(part.strip()) for part in value.split(",") if part.strip())
-    else:
-        layers = tuple(int(layer) for layer in value)
-    if len(layers) != 3:
-        raise ValueError("Qwen 层号必须正好是 3 个整数，例如 10,20,30。")
-    return layers
-
-
-def _resolve_dtype(dtype_name: str) -> torch.dtype:
-    mapping = {
-        "bfloat16": torch.bfloat16,
-        "float16": torch.float16,
-        "float32": torch.float32,
-    }
-    if dtype_name not in mapping:
-        raise ValueError(f"不支持 dtype：{dtype_name}")
-    return mapping[dtype_name]
-
-
-def _resolve_text_device(device: str) -> str:
-    if device == "auto":
-        return "cuda" if torch.cuda.is_available() else "cpu"
-    if device == "cuda" and not torch.cuda.is_available():
-        raise RuntimeError("你选择了 cuda，但当前 PyTorch 看不到 CUDA。")
-    if device not in {"cuda", "cpu"}:
-        raise ValueError(f"不支持 text encoder device：{device}")
-    return device
-
 
 class RUMDualTextProjection(nn.Module):
     def __init__(self, base_weight: torch.Tensor, extra_weight: torch.Tensor, base_text_tokens: int):
@@ -340,7 +94,7 @@ def combine_rum_conditioning(
         else:
             sdxl_extra = flux_base.new_zeros((flux_base.shape[0], extra_text_tokens, flux_base.shape[-1]))
 
-        combined = torch.cat([flux_base, sdxl_extra], dim=1)
+        combined = torch.cat([flux_base, sdxl_extra], dim=1).to(dtype=torch.bfloat16).to(dtype=torch.float32)
         meta = flux_meta.copy()
         if guidance is None:
             meta.pop("guidance", None)
@@ -965,7 +719,7 @@ def diffusers_flux2_sigmas(*, steps: int, width: int, height: int) -> torch.Tens
 
 
 def _diffusers_compute_empirical_mu(*, image_seq_len: int, num_steps: int) -> float:
-    # Matches diffusers Flux2KleinPipeline.compute_empirical_mu, not ComfyUI's Flux2Scheduler approximation.
+    # Matches diffusers Flux2KleinPipeline sigma/time-shift policy, not ComfyUI's Flux2Scheduler approximation.
     a1, b1 = 8.73809524e-05, 1.89833333
     a2, b2 = 0.00016927, 0.45666666
 
@@ -997,78 +751,91 @@ def _unpatchify_flux2_latents(latents: torch.Tensor) -> torch.Tensor:
 def _resolve_vae_first_stage(vae):
     first_stage = getattr(vae, "first_stage_model", None)
     if first_stage is None:
-        raise ValueError("当前 VAE 对象没有 first_stage_model，不能执行 RUM diffusers-exact decode。")
+        raise ValueError("当前 VAE 对象没有 first_stage_model，不能执行 RUM native-match decode。")
     return first_stage
 
 
-def _load_diffusers_flux2_vae(flux2_model_path: str | Path, dtype: torch.dtype) -> nn.Module:
-    from diffusers.models.autoencoders.autoencoder_kl_flux2 import AutoencoderKLFlux2
+def _patch_flux2_vae_attention_for_diffusers_math(first_stage):
+    import comfy.ldm.modules.diffusionmodules.model as comfy_vae_model
 
-    model_path = str(Path(flux2_model_path).expanduser())
-    cache_key = (model_path, str(dtype))
-    diffusers_vae = _DIFFUSERS_FLUX2_VAE_CACHE.get(cache_key)
-    if diffusers_vae is None:
-        diffusers_vae = AutoencoderKLFlux2.from_pretrained(model_path, subfolder="vae", torch_dtype=dtype)
-        diffusers_vae.requires_grad_(False)
-        diffusers_vae.eval()
-        _DIFFUSERS_FLUX2_VAE_CACHE[cache_key] = diffusers_vae
-    return diffusers_vae
+    originals = []
+    for module in first_stage.modules():
+        if isinstance(module, comfy_vae_model.AttnBlock):
+            originals.append((module, module.forward))
+            module.forward = MethodType(_flux2_vae_attention_forward_diffusers_math, module)
+    return originals
 
 
-@torch.inference_mode()
-def _decode_with_diffusers_flux2_vae(latent: torch.Tensor, flux2_model_path: str | Path, dtype: torch.dtype) -> torch.Tensor:
-    import comfy.model_management
-    from diffusers.pipelines.flux2.pipeline_flux2 import Flux2ImageProcessor
+def _restore_module_forwards(originals):
+    for module, forward in originals:
+        module.forward = forward
 
-    device = comfy.model_management.vae_device()
-    offload_device = comfy.model_management.vae_offload_device()
-    diffusers_vae = _load_diffusers_flux2_vae(flux2_model_path, dtype)
-    diffusers_vae.to(device)
 
-    latents = latent.to(device=device, dtype=dtype)
-    bn_mean = diffusers_vae.bn.running_mean.view(1, -1, 1, 1).to(device=latents.device, dtype=latents.dtype)
-    bn_std = torch.sqrt(
-        diffusers_vae.bn.running_var.view(1, -1, 1, 1).to(device=latents.device, dtype=latents.dtype)
-        + float(diffusers_vae.config.batch_norm_eps)
+def _vae_linear(hidden_states: torch.Tensor, module: nn.Module, channels: int) -> torch.Tensor:
+    weight = module.weight.reshape(channels, channels).to(dtype=hidden_states.dtype)
+    bias = module.bias.to(dtype=hidden_states.dtype) if module.bias is not None else None
+    return F.linear(hidden_states, weight, bias)
+
+
+def _flux2_vae_attention_forward_diffusers_math(self, x: torch.Tensor) -> torch.Tensor:
+    residual = x
+    batch_size, channels, height, width = x.shape
+    sequence_length = height * width
+
+    hidden_states = x.view(batch_size, channels, sequence_length).transpose(1, 2)
+    hidden_states = self.norm(hidden_states.transpose(1, 2)).transpose(1, 2)
+
+    query = _vae_linear(hidden_states, self.q, channels)
+    key = _vae_linear(hidden_states, self.k, channels)
+    value = _vae_linear(hidden_states, self.v, channels)
+
+    query = query.view(batch_size, 1, sequence_length, channels)
+    key = key.view(batch_size, 1, sequence_length, channels)
+    value = value.view(batch_size, 1, sequence_length, channels)
+
+    hidden_states = F.scaled_dot_product_attention(
+        query,
+        key,
+        value,
+        attn_mask=None,
+        dropout_p=0.0,
+        is_causal=False,
     )
-    latents = _unpatchify_flux2_latents(latents * bn_std + bn_mean)
-    decoded = diffusers_vae.decode(latents, return_dict=False)[0]
-
-    processor = Flux2ImageProcessor(vae_scale_factor=16)
-    images_np = processor.postprocess(decoded, output_type="np")
-    images_uint8 = (images_np * 255).round().astype("uint8")
-    images = torch.from_numpy(images_uint8).to(dtype=torch.float32).div_(255.0)
-    diffusers_vae.to(offload_device)
-    return images
+    hidden_states = hidden_states.transpose(1, 2).reshape(batch_size, sequence_length, channels)
+    hidden_states = _vae_linear(hidden_states, self.proj_out, channels)
+    hidden_states = hidden_states.transpose(-1, -2).reshape(batch_size, channels, height, width)
+    return hidden_states + residual
 
 
 @torch.inference_mode()
-def decode_diffusers_exact_flux2_latent(vae, samples, flux2_model_path: str | Path | None = None):
+def decode_flux2_native_match_vae_latent(vae, samples):
     import comfy.model_management
 
     latent = samples["samples"] if isinstance(samples, dict) else samples
     if latent.is_nested:
         latent = latent.unbind()[0]
 
-    dtype = getattr(vae, "vae_dtype", torch.bfloat16) if vae is not None else torch.bfloat16
-    if flux2_model_path is not None and str(flux2_model_path).strip():
-        return _decode_with_diffusers_flux2_vae(latent, str(flux2_model_path).strip(), dtype)
-
     first_stage = _resolve_vae_first_stage(vae)
+    if not hasattr(first_stage, "bn"):
+        raise ValueError("当前 VAE 不是 FLUX.2 VAE：找不到 batch norm 参数 bn。")
+
+    dtype = getattr(vae, "vae_dtype", torch.bfloat16)
     device = comfy.model_management.vae_device()
     offload_device = comfy.model_management.vae_offload_device()
     memory_used = vae.memory_used_decode(latent.shape, dtype=dtype)
     comfy.model_management.load_models_gpu([vae.patcher], memory_required=memory_used)
 
-    latents = latent.to(device=device, dtype=dtype)
-    if not hasattr(first_stage, "bn"):
-        raise ValueError("当前 VAE 不是 FLUX.2 diffusers VAE：找不到 batch norm 参数 bn。")
-
     first_stage = first_stage.to(device)
-    decoded = first_stage.decode(latents)
-    images = vae.process_output(decoded.to(torch.float32)).movedim(1, -1)
-    first_stage.to(offload_device)
-    return images
+    patched_forwards = _patch_flux2_vae_attention_for_diffusers_math(first_stage)
+    try:
+        latents = latent.to(device=device, dtype=dtype)
+        decoded = first_stage.decode(latents)
+        images = (decoded * 0.5 + 0.5).clamp(0.0, 1.0).movedim(1, -1).to(torch.float32)
+    finally:
+        _restore_module_forwards(patched_forwards)
+        first_stage.to(offload_device)
+
+    return images.detach().cpu()
 
 def load_rum_native_model(checkpoint_path: str | Path, *, base_text_tokens: int = 200):
     import comfy.sd
@@ -1293,6 +1060,313 @@ def _fit_last_dim(tensor: torch.Tensor, width: int) -> torch.Tensor:
     if tensor.shape[-1] > width:
         return tensor[..., :width]
     return F.pad(tensor, (0, width - tensor.shape[-1]))
+
+
+
+
+def _get_qwen_token_key(tokens: dict) -> str:
+    if "qwen3_4b" in tokens:
+        return "qwen3_4b"
+    if "qwen3_8b" in tokens:
+        return "qwen3_8b"
+    if len(tokens) != 1:
+        raise ValueError(f"无法识别 Qwen token key：{list(tokens)}")
+    return next(iter(tokens))
+
+
+def _qwen_ids_and_mask_from_comfy_tokens(tokens: dict, *, max_sequence_length: int, pad_token: int):
+    key = _get_qwen_token_key(tokens)
+    rows = tokens[key]
+    if not rows:
+        raise ValueError("Qwen tokenizer 没有生成任何 token。")
+
+    ids = []
+    for item in rows[0]:
+        if isinstance(item, tuple):
+            ids.append(int(item[0]))
+        else:
+            ids.append(int(item))
+
+    max_sequence_length = int(max_sequence_length)
+    if len(ids) > max_sequence_length:
+        ids = ids[:max_sequence_length]
+    elif len(ids) < max_sequence_length:
+        ids.extend([int(pad_token)] * (max_sequence_length - len(ids)))
+
+    attention_mask = [0 if token == int(pad_token) else 1 for token in ids]
+    return ids, attention_mask
+
+
+def _exact_qwen_linear(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
+    bias = getattr(module, "bias", None)
+    weight = module.weight.to(device=x.device, dtype=x.dtype)
+    bias = None if bias is None else bias.to(device=x.device, dtype=x.dtype)
+    return F.linear(x, weight, bias)
+
+
+def _exact_qwen_rms_norm(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
+    input_dtype = x.dtype
+    y = x.float()
+    variance = y.pow(2).mean(-1, keepdim=True)
+    y = y * torch.rsqrt(variance + float(module.eps))
+    weight = module.weight.to(device=x.device, dtype=input_dtype)
+    if getattr(module, "add", False):
+        weight = weight + 1.0
+    return weight * y.to(input_dtype)
+
+
+def _exact_qwen_rotate_half(x: torch.Tensor) -> torch.Tensor:
+    half = x.shape[-1] // 2
+    return torch.cat((-x[..., half:], x[..., :half]), dim=-1)
+
+
+def _exact_qwen_apply_rope(q: torch.Tensor, k: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor):
+    cos = cos.unsqueeze(1)
+    sin = sin.unsqueeze(1)
+    q_embed = (q * cos) + (_exact_qwen_rotate_half(q) * sin)
+    k_embed = (k * cos) + (_exact_qwen_rotate_half(k) * sin)
+    return q_embed, k_embed
+
+
+def _exact_qwen_repeat_kv(hidden_states: torch.Tensor, repeats: int) -> torch.Tensor:
+    if repeats == 1:
+        return hidden_states
+    batch, kv_heads, seq_len, head_dim = hidden_states.shape
+    hidden_states = hidden_states[:, :, None, :, :].expand(batch, kv_heads, repeats, seq_len, head_dim)
+    return hidden_states.reshape(batch, kv_heads * repeats, seq_len, head_dim)
+
+
+def _exact_qwen_causal_mask(attention_mask: torch.Tensor, *, dtype: torch.dtype, device: torch.device) -> torch.Tensor:
+    batch, seq_len = attention_mask.shape
+    causal = torch.ones((seq_len, seq_len), dtype=torch.bool, device=device).tril()
+    causal = causal[None, None, :, :].expand(batch, 1, seq_len, seq_len)
+    padding = attention_mask[:, None, None, :].to(device=device, dtype=torch.bool).expand(batch, 1, seq_len, seq_len)
+    return causal & padding
+
+
+def _exact_qwen_rope_cos_sin(model, hidden: torch.Tensor, position_ids: torch.Tensor):
+    config = model.config
+    head_dim = int(config.head_dim)
+    theta = float(config.rope_theta)
+    inv_freq = 1.0 / (
+        theta ** (torch.arange(0, head_dim, 2, dtype=torch.int64).to(dtype=torch.float) / head_dim)
+    )
+    inv_freq = inv_freq.to(device=hidden.device)
+    inv_freq = inv_freq[None, :, None].float().expand(position_ids.shape[0], -1, 1)
+    position_ids = position_ids[:, None, :].float()
+
+    device_type = hidden.device.type if isinstance(hidden.device.type, str) and hidden.device.type != "mps" else "cpu"
+    with torch.autocast(device_type=device_type, enabled=False):
+        freqs = (inv_freq.float() @ position_ids.float()).transpose(1, 2)
+        emb = torch.cat((freqs, freqs), dim=-1)
+        cos = emb.cos()
+        sin = emb.sin()
+    return cos.to(dtype=hidden.dtype), sin.to(dtype=hidden.dtype)
+
+
+@torch.inference_mode()
+def encode_comfy_qwen3_hf_semantics(
+    qwen_clip,
+    text: str,
+    *,
+    max_sequence_length: int,
+    hidden_states_layers: Iterable[int],
+    dtype: torch.dtype = torch.bfloat16,
+):
+    layers = tuple(int(layer) for layer in hidden_states_layers)
+    if len(layers) != 3:
+        raise ValueError("RUM Qwen layers 必须正好包含 3 个层号。")
+
+    cond_stage_model = getattr(qwen_clip, "cond_stage_model", None)
+    clip_attr = getattr(cond_stage_model, "clip", None)
+    text_model = getattr(cond_stage_model, clip_attr, None) if clip_attr else None
+    transformer = getattr(text_model, "transformer", None)
+    model = getattr(transformer, "model", None)
+    if model is None or not hasattr(model, "layers"):
+        raise ValueError("当前 CLIP 不是 ComfyUI FLUX.2/Klein Qwen text encoder。")
+
+    pad_token = int(getattr(text_model, "special_tokens", {}).get("pad", 151643))
+    tokens = qwen_clip.tokenize(text, min_length=int(max_sequence_length))
+    ids, mask = _qwen_ids_and_mask_from_comfy_tokens(
+        tokens,
+        max_sequence_length=int(max_sequence_length),
+        pad_token=pad_token,
+    )
+
+    qwen_clip.load_model(tokens)
+    device = qwen_clip.patcher.load_device
+    ids_tensor = torch.tensor([ids], device=device, dtype=torch.long)
+    attention_mask = torch.tensor([mask], device=device, dtype=torch.long)
+
+    hidden = model.embed_tokens(ids_tensor, out_dtype=dtype)
+    seq_len = hidden.shape[1]
+    cache_position = torch.arange(0, seq_len, device=device)
+    position_ids = cache_position.unsqueeze(0)
+    cos, sin = _exact_qwen_rope_cos_sin(model, hidden, position_ids)
+    causal_mask = _exact_qwen_causal_mask(attention_mask, dtype=hidden.dtype, device=device)
+
+    layer_set = set(layers)
+    collected_by_layer: dict[int, torch.Tensor] = {}
+    for index, layer in enumerate(model.layers):
+        if index in layer_set:
+            collected_by_layer[index] = hidden.clone()
+
+        residual = hidden
+        hidden = _exact_qwen_rms_norm(layer.input_layernorm, hidden)
+
+        attn = layer.self_attn
+        input_shape = hidden.shape[:-1]
+        query = _exact_qwen_linear(attn.q_proj, hidden).view(*input_shape, -1, attn.head_dim)
+        key = _exact_qwen_linear(attn.k_proj, hidden).view(*input_shape, -1, attn.head_dim)
+        value = _exact_qwen_linear(attn.v_proj, hidden).view(*input_shape, -1, attn.head_dim)
+
+        query = _exact_qwen_rms_norm(attn.q_norm, query).transpose(1, 2)
+        key = _exact_qwen_rms_norm(attn.k_norm, key).transpose(1, 2)
+        value = value.transpose(1, 2)
+
+        query, key = _exact_qwen_apply_rope(query, key, cos, sin)
+        repeats = int(attn.num_heads // attn.num_kv_heads)
+        key = _exact_qwen_repeat_kv(key, repeats)
+        value = _exact_qwen_repeat_kv(value, repeats)
+
+        attn_output = F.scaled_dot_product_attention(
+            query,
+            key,
+            value,
+            attn_mask=causal_mask,
+            dropout_p=0.0,
+            is_causal=False,
+            scale=attn.head_dim**-0.5,
+        )
+        attn_output = attn_output.transpose(1, 2).contiguous().reshape(*input_shape, -1)
+        hidden = residual + _exact_qwen_linear(attn.o_proj, attn_output)
+
+        residual = hidden
+        hidden = _exact_qwen_rms_norm(layer.post_attention_layernorm, hidden)
+        mlp = layer.mlp
+        hidden = _exact_qwen_linear(
+            mlp.down_proj,
+            F.silu(_exact_qwen_linear(mlp.gate_proj, hidden)) * _exact_qwen_linear(mlp.up_proj, hidden),
+        )
+        hidden = residual + hidden
+
+    if len(model.layers) in layer_set:
+        collected_by_layer[len(model.layers)] = _exact_qwen_rms_norm(model.norm, hidden)
+
+    missing = [layer for layer in layers if layer not in collected_by_layer]
+    if missing:
+        raise ValueError(f"Qwen 层号超出范围：{layers}；当前模型层数={len(model.layers)}。")
+
+    stacked = torch.stack([collected_by_layer[layer] for layer in layers], dim=1)
+    batch_size, layer_count, seq_len, hidden_dim = stacked.shape
+    prompt_embeds = stacked.permute(0, 2, 1, 3).reshape(batch_size, seq_len, layer_count * hidden_dim)
+    return [[prompt_embeds.to(device="cpu", dtype=torch.float32), {}]]
+
+
+
+
+def _exact_clip_linear(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
+    bias = getattr(module, "bias", None)
+    weight = module.weight.to(device=x.device, dtype=x.dtype)
+    bias = None if bias is None else bias.to(device=x.device, dtype=x.dtype)
+    return F.linear(x, weight, bias)
+
+
+def _exact_clip_layer_norm(module: nn.Module, x: torch.Tensor) -> torch.Tensor:
+    return F.layer_norm(
+        x,
+        module.normalized_shape,
+        module.weight.to(device=x.device, dtype=x.dtype),
+        module.bias.to(device=x.device, dtype=x.dtype),
+        module.eps,
+    )
+
+
+def _exact_clip_causal_mask(seq_len: int, *, dtype: torch.dtype, device: torch.device) -> torch.Tensor:
+    return torch.full((seq_len, seq_len), torch.finfo(dtype).min, dtype=dtype, device=device).triu_(1)[None, None, :, :]
+
+
+def _clip_ids_from_comfy_tokens(token_rows, *, max_sequence_length: int) -> list[int]:
+    if not token_rows:
+        raise ValueError("SDXL tokenizer 没有生成任何 token。")
+    ids = [int(item[0]) if isinstance(item, tuple) else int(item) for item in token_rows[0]]
+    max_sequence_length = int(max_sequence_length)
+    if len(ids) > max_sequence_length:
+        ids = ids[:max_sequence_length]
+    return ids
+
+
+def _encode_clip_text_hf_semantics(text_model, input_ids: torch.Tensor, *, layer_index: int, dtype: torch.dtype):
+    transformer = text_model.transformer
+    model = transformer.text_model
+    input_ids = input_ids.to(transformer.get_input_embeddings().weight.device)
+    hidden = model.embeddings.token_embedding(input_ids, out_dtype=dtype)
+    hidden = hidden + model.embeddings.position_embedding.weight.to(device=input_ids.device, dtype=dtype)
+    causal_mask = _exact_clip_causal_mask(hidden.shape[1], dtype=hidden.dtype, device=hidden.device)
+
+    collected = None
+    for index, layer in enumerate(model.encoder.layers):
+        residual = hidden
+        normed = _exact_clip_layer_norm(layer.layer_norm1, hidden)
+        attn = layer.self_attn
+        batch, seq_len, channels = normed.shape
+        query = _exact_clip_linear(attn.q_proj, normed).view(batch, seq_len, attn.heads, -1).transpose(1, 2)
+        key = _exact_clip_linear(attn.k_proj, normed).view(batch, seq_len, attn.heads, -1).transpose(1, 2)
+        value = _exact_clip_linear(attn.v_proj, normed).view(batch, seq_len, attn.heads, -1).transpose(1, 2)
+        attn_output = F.scaled_dot_product_attention(
+            query,
+            key,
+            value,
+            attn_mask=causal_mask,
+            dropout_p=0.0,
+            is_causal=False,
+            scale=query.shape[-1] ** -0.5,
+        )
+        attn_output = attn_output.transpose(1, 2).contiguous().reshape(batch, seq_len, channels)
+        hidden = residual + _exact_clip_linear(attn.out_proj, attn_output)
+
+        residual = hidden
+        hidden = _exact_clip_layer_norm(layer.layer_norm2, hidden)
+        hidden = layer.mlp.activation(_exact_clip_linear(layer.mlp.fc1, hidden))
+        hidden = _exact_clip_linear(layer.mlp.fc2, hidden)
+        hidden = residual + hidden
+
+        if index == layer_index:
+            collected = hidden.clone()
+
+    if collected is None:
+        raise ValueError(f"SDXL CLIP layer_index 超出范围：{layer_index}。")
+    return collected
+
+
+@torch.inference_mode()
+def encode_comfy_sdxl_hf_semantics(sdxl_clip, text: str, *, dtype: torch.dtype = torch.float16):
+    cond_stage_model = getattr(sdxl_clip, "cond_stage_model", None)
+    clip_l = getattr(cond_stage_model, "clip_l", None)
+    clip_g = getattr(cond_stage_model, "clip_g", None)
+    if clip_l is None or clip_g is None:
+        raise ValueError("当前 CLIP 不是 ComfyUI SDXL DualCLIP。")
+
+    tokens = sdxl_clip.tokenize(text, disable_weights=True)
+    if "l" not in tokens or "g" not in tokens:
+        raise ValueError(f"无法识别 SDXL token key：{list(tokens)}")
+
+    ids_l = _clip_ids_from_comfy_tokens(tokens["l"], max_sequence_length=77)
+    ids_g = _clip_ids_from_comfy_tokens(tokens["g"], max_sequence_length=77)
+    if len(ids_l) != len(ids_g):
+        cut_to = min(len(ids_l), len(ids_g))
+        ids_l = ids_l[:cut_to]
+        ids_g = ids_g[:cut_to]
+
+    sdxl_clip.load_model(tokens)
+    device = sdxl_clip.patcher.load_device
+    ids_l_tensor = torch.tensor([ids_l], device=device, dtype=torch.long)
+    ids_g_tensor = torch.tensor([ids_g], device=device, dtype=torch.long)
+    out_l = _encode_clip_text_hf_semantics(clip_l, ids_l_tensor, layer_index=clip_l.num_layers - 2, dtype=dtype)
+    out_g = _encode_clip_text_hf_semantics(clip_g, ids_g_tensor, layer_index=clip_g.num_layers - 2, dtype=dtype)
+    cut_to = min(out_l.shape[1], out_g.shape[1])
+    output = torch.cat([out_l[:, :cut_to], out_g[:, :cut_to]], dim=-1)
+    return [[output.to(device="cpu", dtype=torch.float32), {}]]
 
 
 def _swap_scale_shift(weight: torch.Tensor) -> torch.Tensor:

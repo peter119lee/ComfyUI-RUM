@@ -1,20 +1,17 @@
 {
-  "1": {
+  "2": {
     "class_type": "RUMFlux2LoadNativeModel",
     "inputs": {
-      "rum_checkpoint_name": "rum-flux2-klein-4b-preview.safetensors",
-      "rum_checkpoint_path": "",
-      "base_text_tokens": 200
-    },
-    "_meta": {
-      "title": "Load RUM checkpoint directly: rum-flux2-klein-4b-preview.safetensors"
+      "rum_checkpoint_name": "Unknown\\no tags\\rum-flux2-klein-4b-preview.safetensors",
+      "base_text_tokens": 200,
+      "rum_checkpoint_path": ""
     }
   },
   "3": {
     "class_type": "RUMFlux2DiffusersMatchModelPatch",
     "inputs": {
       "model": [
-        "1",
+        "2",
         0
       ],
       "base_text_tokens": 200,
@@ -22,13 +19,36 @@
       "disable_guidance": true
     }
   },
-  "6": {
-    "class_type": "RUMDiffusersExactTextEncode",
+  "4": {
+    "class_type": "CLIPLoader",
     "inputs": {
+      "clip_name": "qwen_3_4b.safetensors",
+      "type": "flux2",
+      "device": "default"
+    }
+  },
+  "5": {
+    "class_type": "DualCLIPLoader",
+    "inputs": {
+      "clip_name1": "waiIllustriousSDXL_v160_clip_l.safetensors",
+      "clip_name2": "waiIllustriousSDXL_v160_clip_g.safetensors",
+      "type": "sdxl",
+      "device": "cpu"
+    }
+  },
+  "6": {
+    "class_type": "RUMFlux2NativeMatchTextEncode",
+    "inputs": {
+      "qwen_clip": [
+        "4",
+        0
+      ],
+      "sdxl_clip": [
+        "5",
+        0
+      ],
       "prompt": "1girl, kisaki (blue archive), eating baozi, sitting, indoors",
       "negative_prompt": "",
-      "flux2_model_path": "L:/Antigravitiy code/RUM/models/FLUX.2-klein-base-4B",
-      "sdxl_text_model_path": "L:/Antigravitiy code/RUM/models/waiIllustriousSDXL_v160_text",
       "guidance": 5.0,
       "use_guidance_embedding": false,
       "base_text_tokens": 200,
@@ -36,13 +56,7 @@
       "extra_text_tokens": 77,
       "positive_qwen_layers": "10,20,30",
       "negative_qwen_layers": "9,18,27",
-      "device": "cuda",
-      "qwen_dtype": "bfloat16",
-      "sdxl_dtype": "float16",
-      "unload_after_encode": false
-    },
-    "_meta": {
-      "title": "Diffusers-exact Qwen + SDXL text encode"
+      "sdxl_clip_width": 2048
     }
   },
   "12": {
@@ -58,17 +72,11 @@
     "inputs": {
       "noise_seed": 1,
       "dtype": "bfloat16"
-    },
-    "_meta": {
-      "title": "Diffusers-style CPU BF16 noise"
     }
   },
   "14": {
     "class_type": "RUMFlux2DiffusersEulerSampler",
-    "inputs": {},
-    "_meta": {
-      "title": "Diffusers-match Euler sampler (BF16 latent step)"
-    }
+    "inputs": {}
   },
   "15": {
     "class_type": "RUMFlux2DiffusersScheduler",
@@ -76,9 +84,6 @@
       "steps": 20,
       "width": 960,
       "height": 1024
-    },
-    "_meta": {
-      "title": "Diffusers-match FlowMatch Euler scheduler"
     }
   },
   "17": {
@@ -110,13 +115,10 @@
     "class_type": "VAELoader",
     "inputs": {
       "vae_name": "flux2-vae.safetensors"
-    },
-    "_meta": {
-      "title": "Load FLUX.2 VAE: flux2-vae.safetensors"
     }
   },
   "19": {
-    "class_type": "RUMFlux2DiffusersExactVAEDecode",
+    "class_type": "RUMFlux2NativeMatchVAEDecode",
     "inputs": {
       "samples": [
         "17",
@@ -125,17 +127,22 @@
       "vae": [
         "18",
         0
-      ],
-      "diffusers_vae_model_path": "L:/Antigravitiy code/RUM/models/FLUX.2-klein-base-4B"
-    },
-    "_meta": {
-      "title": "Diffusers-exact FLUX.2 VAE decode"
+      ]
     }
   },
   "20": {
     "class_type": "SaveImage",
     "inputs": {
-      "filename_prefix": "RUM_native_diffusers_exact",
+      "filename_prefix": "RUM_native_diffusers_match",
+      "images": [
+        "21",
+        0
+      ]
+    }
+  },
+  "21": {
+    "class_type": "RUMRoundImageForSave",
+    "inputs": {
       "images": [
         "19",
         0
@@ -143,6 +150,7 @@
     }
   },
   "22": {
+    "class_type": "RUMFlux2DiffusersCFGuider",
     "inputs": {
       "model": [
         "3",
@@ -157,10 +165,6 @@
         1
       ],
       "cfg": 5.0
-    },
-    "class_type": "RUMFlux2DiffusersCFGuider",
-    "_meta": {
-      "title": "Diffusers-match CFG guider"
     }
   }
 }

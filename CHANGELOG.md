@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.6
+
+- Fixed VAE attention dtype mismatch: `GroupNorm` upcasts BF16 to FP32 but `F.linear` weight stayed BF16, causing ~2-3 pixel-level drift across all output pixels. Added `_vae_linear` helper for dtype alignment.
+- Verified all 4 upstream RUM reference images are now pixel-identical (`max_abs=0`) with the native diffusers-match workflow.
+- Added workflow preview screenshot to README.
+- Updated README to reflect zero unsolved alignment issues.
+
 ## 0.2.5
 
 - Documented why native ComfyUI cannot exactly reproduce the old diffusers output.
