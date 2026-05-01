@@ -215,8 +215,6 @@ models/vae/flux2-vae.safetensors
 原始 FLUX.2-klein-base-4B diffusers 目录（用于 exact VAE decode）
 ```
 
-![diffusers-match workflow screenshot](assets/diffusers-match-workflow.png)
-
 这个 workflow 和普通 native workflow 不一样：
 
 - 使用 `RUM FLUX.2 Load Native Model` 直接加载 RUM checkpoint。
@@ -522,8 +520,6 @@ models/text_encoders/waiIllustriousSDXL_v160_clip_g.safetensors
 models/vae/flux2-vae.safetensors
 original FLUX.2-klein-base-4B diffusers directory (for exact VAE decode)
 ```
-
-![diffusers-match workflow screenshot](assets/diffusers-match-workflow.png)
 
 This workflow differs from the normal native workflow:
 
