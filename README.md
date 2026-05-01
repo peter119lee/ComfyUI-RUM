@@ -9,7 +9,9 @@ RUM 的原始想法、模型和参考推理代码来自 RimoChan/RUM。本仓库
 - 普通 native workflow 可以跑 RUM，但不承诺和原始 diffusers 输出同图。
 - `diffusers-match` API workflow 是验证路径，尽量复刻 RimoChan/RUM 的 diffusers 推理细节。
 - 已验证过一组本地 diffusers reference（seed `7478533297787`）可以和 ComfyUI workflow PNG 逐像素 0 差。
-- RimoChan/RUM 仓库自带示例图 `output_0.png`（seed `1`）目前还没有和 ComfyUI workflow 达到 0 差；当前差异约为 `mean_abs=2.7757`、`rmse=10.1886`。这不是最终目标，仍在继续追踪。
+- RimoChan/RUM 仓库自带示例图 `output_0.png`（seed `1`）用当前 native diffusers-match workflow 肉眼基本一致，但像素比较仍不是 0 差；最近一次记录约为 `mean_abs=2.7757`、`rmse=10.1886`。这不是最终目标，仍在继续追踪。
+- 曾验证过一个直接调用原始 diffusers pipeline 的 `RUMDiffusersExactGenerateAndSave` 实验节点，能让 `output_0.png` 字节级一致，但它要求在 ComfyUI 环境安装并加载 diffusers pipeline，不符合主分支“ComfyUI native custom node”的目标，所以只保留在 `codex/diffusers-exact-reference-node` 分支作为参考，不进 `main`。
+- 当前重点继续放在 native 路线；`SaveImage` / VAE postprocess / PNG 量化路径是剩余像素差异的重点排查对象之一。
 
 这段状态很重要：**不要把普通 workflow、seed747 本地 reference、上游 `output_0.png` 三者混成同一个验证目标。**
 
