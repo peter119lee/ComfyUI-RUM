@@ -56,7 +56,7 @@
   "13": {
     "class_type": "RUMFlux2DiffusersNoise",
     "inputs": {
-      "noise_seed": 7478533297787,
+      "noise_seed": 1,
       "dtype": "bfloat16"
     },
     "_meta": {

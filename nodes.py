@@ -333,7 +333,7 @@ class RUMFlux2DiffusersNoise:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "noise_seed": ("INT", {"default": 7478533297787, "min": 0, "max": 0xffffffffffffffff}),
+                "noise_seed": ("INT", {"default": 1, "min": 0, "max": 0xffffffffffffffff}),
                 "dtype": (["bfloat16", "float16", "float32"], {"default": "bfloat16"}),
             }
         }
