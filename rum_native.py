@@ -415,24 +415,11 @@ def pack_rum_reference_latents(
     device: torch.device,
     dtype: torch.dtype,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    if reference_latents is None:
-        raise ValueError("RUM reference_latents 不能为空。")
-    if isinstance(reference_latents, dict):
-        latents = reference_latents.get("latents")
-    else:
-        latents = reference_latents
-    if not isinstance(latents, list):
-        raise ValueError(f"RUM reference_latents 需要包含 latents list，当前类型是 {type(latents)}。")
-    if len(latents) == 0:
-        raise ValueError("RUM reference_latents list 不能为空。")
+    latents = validate_rum_reference_latents(reference_latents)
 
     packed_latents = []
     normalized_latents = []
     for latent in latents:
-        if latent.ndim != 4:
-            raise ValueError(f"RUM reference latent 必须是 4D tensor，当前形状是 {tuple(latent.shape)}。")
-        if latent.shape[0] != 1:
-            raise ValueError(f"RUM reference latent 单项 batch 必须为 1，当前形状是 {tuple(latent.shape)}。")
         current = latent.to(device=device, dtype=dtype)
         normalized_latents.append(current)
         packed_latents.append(pack_flux2_latents(current).squeeze(0))
@@ -566,8 +553,7 @@ def encode_flux2_vae_mode_latent(first_stage: nn.Module, image: torch.Tensor) ->
 def encode_flux2_native_match_reference_image(vae, images) -> tuple[dict, str]:
     import comfy.model_management
 
-    if not torch.is_tensor(images) or images.ndim != 4:
-        raise ValueError(f"RUM reference encode 需要 ComfyUI IMAGE tensor [B,H,W,C]，当前类型/形状是 {type(images)}。")
+    validate_comfy_reference_image_batch(images)
 
     first_stage = _resolve_vae_first_stage(vae)
     if not hasattr(first_stage, "bn"):
@@ -916,6 +902,9 @@ def _predict_raw_noise(model, x, timestep, cond, model_options, branch: str):
 def create_diffusers_cfg_guider(model, positive, negative, cfg: float, reference_latents=None):
     import comfy.model_patcher
     import comfy.samplers
+
+    if reference_latents is not None:
+        validate_rum_reference_latents(reference_latents)
 
     def branch_options(model_options, branch: str):
         options = comfy.model_patcher.create_model_options_clone(model_options)
@@ -1744,6 +1733,52 @@ def _encode_clip_text_hf_semantics(text_model, input_ids: torch.Tensor, *, layer
 
 
 _SDXL_TEACHER_CACHE = {}
+_SDXL_TEACHER_DTYPES = {torch.float16, torch.bfloat16, torch.float32}
+
+
+def validate_comfy_reference_image_batch(images: torch.Tensor) -> None:
+    if not torch.is_tensor(images):
+        raise ValueError(f"RUM reference encode 需要 ComfyUI IMAGE tensor [B,H,W,C]，当前类型是 {type(images)}。")
+    if images.ndim != 4:
+        raise ValueError(f"RUM reference encode 需要 ComfyUI IMAGE tensor [B,H,W,C]，当前形状是 {tuple(images.shape)}。")
+    if images.shape[0] <= 0:
+        raise ValueError("RUM reference encode 需要至少 1 张图片。")
+    if images.shape[1] <= 0 or images.shape[2] <= 0:
+        raise ValueError(f"RUM reference encode 图片高宽必须大于 0，当前形状是 {tuple(images.shape)}。")
+    if images.shape[-1] < 3:
+        raise ValueError(f"RUM reference encode 需要 RGB 图片 [B,H,W,C>=3]，当前 channel={images.shape[-1]}。")
+    if not torch.is_floating_point(images):
+        raise ValueError(f"RUM reference encode 需要浮点 IMAGE tensor，当前 dtype={images.dtype}。")
+
+
+def validate_rum_reference_latents(reference_latents) -> list[torch.Tensor]:
+    if reference_latents is None:
+        raise ValueError("RUM reference_latents 不能为空。")
+    if isinstance(reference_latents, dict):
+        latents = reference_latents.get("latents")
+    else:
+        latents = reference_latents
+    if not isinstance(latents, list):
+        raise ValueError(f"RUM reference_latents 需要包含 latents list，当前类型是 {type(latents)}。")
+    if len(latents) == 0:
+        raise ValueError("RUM reference_latents list 不能为空。")
+
+    for index, latent in enumerate(latents):
+        if not torch.is_tensor(latent):
+            raise ValueError(f"RUM reference latent #{index} 必须是 tensor，当前类型是 {type(latent)}。")
+        if latent.ndim != 4:
+            raise ValueError(f"RUM reference latent #{index} 必须是 4D tensor，当前形状是 {tuple(latent.shape)}。")
+        if latent.shape[0] != 1:
+            raise ValueError(f"RUM reference latent #{index} 单项 batch 必须为 1，当前形状是 {tuple(latent.shape)}。")
+        if latent.shape[1] <= 0 or latent.shape[2] <= 0 or latent.shape[3] <= 0:
+            raise ValueError(f"RUM reference latent #{index} 维度必须大于 0，当前形状是 {tuple(latent.shape)}。")
+    return latents
+
+
+def validate_sdxl_teacher_dtype(dtype: torch.dtype) -> torch.dtype:
+    if dtype not in _SDXL_TEACHER_DTYPES:
+        raise ValueError(f"RUM SDXL teacher exact path 只支持 FP16/BF16/FP32，当前 dtype={dtype}。")
+    return dtype
 
 
 def _resolve_comfy_model_dir() -> Path:
@@ -1816,6 +1851,7 @@ def _load_sdxl_teacher_hf_pair(device: torch.device, dtype: torch.dtype):
 
 @torch.inference_mode()
 def _encode_sdxl_teacher_hf_exact(text: str, *, device: torch.device, dtype: torch.dtype):
+    dtype = validate_sdxl_teacher_dtype(dtype)
     clip_l, clip_g, tokenizer_l, tokenizer_g = _load_sdxl_teacher_hf_pair(device, dtype)
     embeddings = []
     for tokenizer, model in ((tokenizer_l, clip_l), (tokenizer_g, clip_g)):

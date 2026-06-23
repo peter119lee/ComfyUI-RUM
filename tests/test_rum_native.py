@@ -14,6 +14,9 @@ from rum_native import (
     pack_rum_reference_latents,
     preprocess_flux2_reference_image_tensor,
     prepare_diffusers_reference_image_ids,
+    validate_comfy_reference_image_batch,
+    validate_rum_reference_latents,
+    validate_sdxl_teacher_dtype,
 )
 
 
@@ -148,3 +151,39 @@ def test_reference_image_preprocess_matches_flux2_klein_crop_size():
     assert processed.shape == (1, 3, 1200, 656)
     assert processed.min().item() == -1.0
     assert processed.max().item() == -1.0
+
+
+def test_reference_image_batch_validation_rejects_empty_batch():
+    try:
+        validate_comfy_reference_image_batch(torch.zeros(0, 64, 64, 3))
+    except ValueError as exc:
+        assert "至少 1 张图片" in str(exc)
+    else:
+        raise AssertionError("Expected empty reference image batch to fail.")
+
+
+def test_reference_image_batch_validation_rejects_non_rgb_tensor():
+    try:
+        validate_comfy_reference_image_batch(torch.zeros(1, 64, 64, 1))
+    except ValueError as exc:
+        assert "C>=3" in str(exc)
+    else:
+        raise AssertionError("Expected non-RGB reference image batch to fail.")
+
+
+def test_reference_latents_validation_rejects_missing_latents_key():
+    try:
+        validate_rum_reference_latents({})
+    except ValueError as exc:
+        assert "latents list" in str(exc)
+    else:
+        raise AssertionError("Expected missing reference latents list to fail.")
+
+
+def test_sdxl_teacher_dtype_validation_rejects_integer_dtype():
+    try:
+        validate_sdxl_teacher_dtype(torch.int64)
+    except ValueError as exc:
+        assert "FP16/BF16/FP32" in str(exc)
+    else:
+        raise AssertionError("Expected integer teacher dtype to fail.")
