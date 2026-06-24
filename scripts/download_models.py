@@ -75,6 +75,9 @@ TEACHER_SDXL_CLIP_FILES = [
         "folder": "text_encoders",
         "target": "waiNSFWIllustrious_v140_clip_g.safetensors",
     },
+]
+
+TEACHER_SDXL_HF_EXACT_FILES = [
     {
         "label": "Diffusers-match SDXL teacher CLIP-L HF config",
         "repo": "Ine007/waiNSFWIllustrious_v140",
@@ -141,7 +144,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--include-teacher-clip",
         action="store_true",
-        help="Also download waiNSFWIllustrious_v140 CLIP files used by the diffusers-match sample workflow.",
+        help="Also download waiNSFWIllustrious_v140 flat CLIP files used by the diffusers-match sample workflow.",
+    )
+    parser.add_argument(
+        "--include-teacher-hf-exact",
+        action="store_true",
+        help="Also download waiNSFWIllustrious_v140 HF folders for strict pixel-exact text encoding.",
     )
     parser.add_argument(
         "--include-edit-checkpoint",
@@ -180,6 +188,8 @@ def selected_files(args: argparse.Namespace) -> list[dict[str, str]]:
         files.extend(GENERIC_SDXL_CLIP_FILES)
     if args.include_teacher_clip or args.all:
         files.extend(TEACHER_SDXL_CLIP_FILES)
+    if args.include_teacher_hf_exact or args.all:
+        files.extend(TEACHER_SDXL_HF_EXACT_FILES)
     return files
 
 
@@ -192,11 +202,14 @@ def print_workflow_hint(args: argparse.Namespace) -> None:
     if args.include_teacher_clip or args.all:
         print(
             "- examples/diffusers_match_workflow*.json can use "
-            "waiNSFWIllustrious_v140_clip_l.safetensors + waiNSFWIllustrious_v140_clip_g.safetensors, "
-            "with matching *_clip_l_dir and *_clip_g_dir HF folders for exact text encoding."
+            "waiNSFWIllustrious_v140_clip_l.safetensors + waiNSFWIllustrious_v140_clip_g.safetensors."
         )
     else:
         print("- For examples/diffusers_match_workflow*.json, rerun with --include-teacher-clip.")
+    if args.include_teacher_hf_exact or args.all:
+        print("- Strict pixel-exact text encoding can use *_clip_l_dir and *_clip_g_dir after setting RUM_SDXL_TEACHER_HF_EXACT=1.")
+    else:
+        print("- For strict pixel-exact text encoding only, rerun with --include-teacher-hf-exact and set RUM_SDXL_TEACHER_HF_EXACT=1.")
     if args.include_edit_checkpoint or args.all:
         print("- examples/diffusers_match_edit_workflow_api.json can use model-checkpoint-1202000.safetensors.")
     else:

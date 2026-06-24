@@ -148,7 +148,7 @@ height=1200
 
 ## 模型文件
 
-diffusers-match workflow 需要的模型：
+diffusers-match workflow 正常生成需要的模型：
 
 | 用途 | 推荐文件 | ComfyUI 位置 |
 | --- | --- | --- |
@@ -158,8 +158,13 @@ diffusers-match workflow 需要的模型：
 | FLUX.2 VAE | `flux2-vae.safetensors` | `models/vae/` |
 | SDXL teacher CLIP-L | `waiNSFWIllustrious_v140_clip_l.safetensors` | `models/text_encoders/` |
 | SDXL teacher CLIP-G | `waiNSFWIllustrious_v140_clip_g.safetensors` | `models/text_encoders/` |
-| SDXL teacher CLIP-L exact HF 目录 | `waiNSFWIllustrious_v140_clip_l_dir/config.json` + `model.safetensors` | `models/text_encoders/` |
-| SDXL teacher CLIP-G exact HF 目录 | `waiNSFWIllustrious_v140_clip_g_dir/config.json` + `model.safetensors` | `models/text_encoders/` |
+
+strict pixel exact text encode 的可选模型：
+
+| 用途 | 推荐文件 | ComfyUI 位置 |
+| --- | --- | --- |
+| SDXL teacher CLIP-L exact HF 目录（strict pixel exact） | `waiNSFWIllustrious_v140_clip_l_dir/config.json` + `model.safetensors` | `models/text_encoders/` |
+| SDXL teacher CLIP-G exact HF 目录（strict pixel exact） | `waiNSFWIllustrious_v140_clip_g_dir/config.json` + `model.safetensors` | `models/text_encoders/` |
 
 模型来源和直链：
 
@@ -184,13 +189,19 @@ python scripts/download_models.py --comfy-root /path/to/ComfyUI --include-teache
 python scripts/download_models.py --comfy-root /path/to/ComfyUI --include-teacher-clip --include-edit-checkpoint
 ```
 
+可选：同时下载 strict pixel exact text encode 用的 HF 目录：
+
+```bash
+python scripts/download_models.py --comfy-root /path/to/ComfyUI --include-teacher-clip --include-teacher-hf-exact
+```
+
 检查安装：
 
 ```bash
 python scripts/check_install.py --comfy-root /path/to/ComfyUI
 ```
 
-`DualCLIPLoader` 使用 flat `.safetensors` 文件；exact text encode 会从同名前缀的 `*_clip_l_dir` 和 `*_clip_g_dir` HF 目录加载 `transformers` 模型。`scripts/download_models.py --include-teacher-clip` 会同时准备这两套文件。
+`DualCLIPLoader` 使用 flat `.safetensors` 文件。`*_clip_l_dir` 和 `*_clip_g_dir` HF 目录只用于 strict pixel exact text encode；默认不会启用，也不会影响正常生成。只有设置环境变量 `RUM_SDXL_TEACHER_HF_EXACT=1` 时，节点才会尝试从 HF 目录加载 transformers 模型；否则使用 ComfyUI 已加载的 SDXL DualCLIP flat 文件。
 
 ## 测试
 
@@ -418,7 +429,7 @@ Different ComfyUI distributions may expose different model names in the dropdown
 
 ## Model Files
 
-Models required by the diffusers-match workflow:
+Models required for normal diffusers-match generation:
 
 | Purpose | Recommended file | ComfyUI location |
 | --- | --- | --- |
@@ -428,8 +439,13 @@ Models required by the diffusers-match workflow:
 | FLUX.2 VAE | `flux2-vae.safetensors` | `models/vae/` |
 | SDXL teacher CLIP-L | `waiNSFWIllustrious_v140_clip_l.safetensors` | `models/text_encoders/` |
 | SDXL teacher CLIP-G | `waiNSFWIllustrious_v140_clip_g.safetensors` | `models/text_encoders/` |
-| SDXL teacher CLIP-L exact HF folder | `waiNSFWIllustrious_v140_clip_l_dir/config.json` + `model.safetensors` | `models/text_encoders/` |
-| SDXL teacher CLIP-G exact HF folder | `waiNSFWIllustrious_v140_clip_g_dir/config.json` + `model.safetensors` | `models/text_encoders/` |
+
+Optional models for strict pixel-exact text encoding:
+
+| Purpose | Recommended file | ComfyUI location |
+| --- | --- | --- |
+| SDXL teacher CLIP-L exact HF folder (strict pixel exact) | `waiNSFWIllustrious_v140_clip_l_dir/config.json` + `model.safetensors` | `models/text_encoders/` |
+| SDXL teacher CLIP-G exact HF folder (strict pixel exact) | `waiNSFWIllustrious_v140_clip_g_dir/config.json` + `model.safetensors` | `models/text_encoders/` |
 
 Model sources and direct links:
 
@@ -454,13 +470,19 @@ Also download the edit checkpoint:
 python scripts/download_models.py --comfy-root /path/to/ComfyUI --include-teacher-clip --include-edit-checkpoint
 ```
 
+Optionally download the HF folders for strict pixel-exact text encoding:
+
+```bash
+python scripts/download_models.py --comfy-root /path/to/ComfyUI --include-teacher-clip --include-teacher-hf-exact
+```
+
 Check installation:
 
 ```bash
 python scripts/check_install.py --comfy-root /path/to/ComfyUI
 ```
 
-`DualCLIPLoader` uses the flat `.safetensors` files; exact text encoding loads `transformers` models from the matching `*_clip_l_dir` and `*_clip_g_dir` HF folders. `scripts/download_models.py --include-teacher-clip` prepares both layouts.
+`DualCLIPLoader` uses the flat `.safetensors` files. The `*_clip_l_dir` and `*_clip_g_dir` HF folders are only used for strict pixel-exact text encoding; they are disabled by default and do not affect normal generation. Set `RUM_SDXL_TEACHER_HF_EXACT=1` only when you want the node to load transformers models from those HF folders. Otherwise the node uses the SDXL DualCLIP flat files already loaded by ComfyUI.
 
 ## Tests
 

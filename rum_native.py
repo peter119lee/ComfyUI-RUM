@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import importlib.util
+import os
 import re
 import math
 from contextlib import contextmanager
@@ -14,6 +16,7 @@ from safetensors.torch import load_file
 
 
 _DIFFUSION_PREFIX = "diffusion_model."
+_SDXL_TEACHER_HF_EXACT_ENV = "RUM_SDXL_TEACHER_HF_EXACT"
 
 class RUMDualTextProjection(nn.Module):
     def __init__(self, base_weight: torch.Tensor, extra_weight: torch.Tensor, base_text_tokens: int):
@@ -1799,9 +1802,12 @@ def _resolve_comfy_model_dir() -> Path:
     return Path(directories[0])
 
 
-def _find_sdxl_teacher_dirs(text_encoder_dir: Path) -> tuple[Path, Path]:
-    l_dirs = sorted(path for path in text_encoder_dir.glob("*_clip_l_dir") if (path / "model.safetensors").is_file())
-    g_dirs = sorted(path for path in text_encoder_dir.glob("*_clip_g_dir") if (path / "model.safetensors").is_file())
+def _sdxl_teacher_dir_pairs(text_encoder_dir: Path) -> list[tuple[Path, Path]]:
+    def is_complete_hf_dir(path: Path) -> bool:
+        return (path / "config.json").is_file() and (path / "model.safetensors").is_file()
+
+    l_dirs = sorted(path for path in text_encoder_dir.glob("*_clip_l_dir") if is_complete_hf_dir(path))
+    g_dirs = sorted(path for path in text_encoder_dir.glob("*_clip_g_dir") if is_complete_hf_dir(path))
     pairs = []
     g_by_prefix = {path.name.removesuffix("_clip_g_dir"): path for path in g_dirs}
     for l_dir in l_dirs:
@@ -1809,16 +1815,66 @@ def _find_sdxl_teacher_dirs(text_encoder_dir: Path) -> tuple[Path, Path]:
         g_dir = g_by_prefix.get(prefix)
         if g_dir is not None:
             pairs.append((l_dir, g_dir))
+    return pairs
 
+
+def _find_sdxl_teacher_dirs(text_encoder_dir: Path) -> tuple[Path, Path]:
+    pairs = _sdxl_teacher_dir_pairs(text_encoder_dir)
     if len(pairs) == 1:
         return pairs[0]
     if not pairs:
         raise FileNotFoundError(
             "找不到 SDXL teacher HF 目录。请在 ComfyUI models/text_encoders 下准备 "
-            "*_clip_l_dir/model.safetensors 和 *_clip_g_dir/model.safetensors。"
+            "*_clip_l_dir/config.json + model.safetensors 和 *_clip_g_dir/config.json + model.safetensors。"
         )
     names = ", ".join(f"{left.name} + {right.name}" for left, right in pairs)
     raise ValueError(f"找到多个 SDXL teacher HF 目录，无法确定使用哪一组：{names}")
+
+
+def should_use_sdxl_teacher_hf_exact(
+    text_encoder_dir: Path,
+    *,
+    cuda_available: bool,
+    transformers_available: bool,
+    exact_enabled: bool,
+) -> bool:
+    if not exact_enabled or not cuda_available or not transformers_available:
+        return False
+    return len(_sdxl_teacher_dir_pairs(text_encoder_dir)) == 1
+
+
+def sdxl_teacher_hf_exact_enabled_from_env() -> bool:
+    value = os.environ.get(_SDXL_TEACHER_HF_EXACT_ENV, "").strip().lower()
+    return value in {"1", "true", "yes", "on"}
+
+
+def _should_use_sdxl_teacher_hf_exact() -> bool:
+    if not sdxl_teacher_hf_exact_enabled_from_env():
+        return False
+    if not torch.cuda.is_available():
+        raise RuntimeError(
+            f"RUM strict SDXL teacher HF exact path 需要 CUDA； unset {_SDXL_TEACHER_HF_EXACT_ENV} 后可使用普通生成路径。"
+        )
+    if importlib.util.find_spec("transformers") is None:
+        raise ValueError(
+            f"RUM strict SDXL teacher HF exact path 需要 transformers；安装 transformers 或 unset {_SDXL_TEACHER_HF_EXACT_ENV}。"
+        )
+    try:
+        text_encoder_dir = _resolve_comfy_model_dir()
+    except ValueError:
+        raise ValueError(
+            f"RUM strict SDXL teacher HF exact path 无法定位 ComfyUI text_encoders 目录；"
+            f"请修正 ComfyUI folder_paths 或 unset {_SDXL_TEACHER_HF_EXACT_ENV}。"
+        )
+    if should_use_sdxl_teacher_hf_exact(
+        text_encoder_dir,
+        cuda_available=torch.cuda.is_available(),
+        transformers_available=importlib.util.find_spec("transformers") is not None,
+        exact_enabled=True,
+    ):
+        return True
+    _find_sdxl_teacher_dirs(text_encoder_dir)
+    return False
 
 
 def _load_sdxl_teacher_hf_pair(device: torch.device, dtype: torch.dtype):
@@ -1868,18 +1924,12 @@ def _encode_sdxl_teacher_hf_exact(text: str, *, device: torch.device, dtype: tor
 
 
 @torch.inference_mode()
-def encode_comfy_sdxl_hf_semantics(sdxl_clip, text: str, *, dtype: torch.dtype = torch.float16):
+def _encode_sdxl_teacher_comfy_clip(sdxl_clip, text: str, *, dtype: torch.dtype):
     cond_stage_model = getattr(sdxl_clip, "cond_stage_model", None)
     clip_l = getattr(cond_stage_model, "clip_l", None)
     clip_g = getattr(cond_stage_model, "clip_g", None)
     if clip_l is None or clip_g is None:
         raise ValueError("当前 CLIP 不是 ComfyUI SDXL DualCLIP。")
-
-    if not torch.cuda.is_available():
-        raise RuntimeError("RUM SDXL teacher exact path 需要 CUDA；像素级对齐验证不能在 CPU CLIP/VAE 上执行。")
-    device = torch.device("cuda")
-    exact = _encode_sdxl_teacher_hf_exact(text, device=device, dtype=dtype)
-    return [[exact.to(device="cpu", dtype=torch.float32), {}]]
 
     tokens = sdxl_clip.tokenize(text, disable_weights=True)
     if "l" not in tokens or "g" not in tokens:
@@ -1901,6 +1951,21 @@ def encode_comfy_sdxl_hf_semantics(sdxl_clip, text: str, *, dtype: torch.dtype =
     cut_to = min(out_l.shape[1], out_g.shape[1])
     output = torch.cat([out_l[:, :cut_to], out_g[:, :cut_to]], dim=-1)
     return [[output.to(device="cpu", dtype=torch.float32), {}]]
+
+
+@torch.inference_mode()
+def encode_comfy_sdxl_hf_semantics(sdxl_clip, text: str, *, dtype: torch.dtype = torch.float16):
+    cond_stage_model = getattr(sdxl_clip, "cond_stage_model", None)
+    clip_l = getattr(cond_stage_model, "clip_l", None)
+    clip_g = getattr(cond_stage_model, "clip_g", None)
+    if clip_l is None or clip_g is None:
+        raise ValueError("当前 CLIP 不是 ComfyUI SDXL DualCLIP。")
+
+    if _should_use_sdxl_teacher_hf_exact():
+        exact = _encode_sdxl_teacher_hf_exact(text, device=torch.device("cuda"), dtype=dtype)
+        return [[exact.to(device="cpu", dtype=torch.float32), {"rum_sdxl_teacher_mode": "hf_exact"}]]
+
+    return _encode_sdxl_teacher_comfy_clip(sdxl_clip, text, dtype=dtype)
 
 
 def _swap_scale_shift(weight: torch.Tensor) -> torch.Tensor:

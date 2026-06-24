@@ -19,6 +19,7 @@ from rum_native import (
     validate_comfy_reference_image_batch,
     validate_rum_reference_latents,
     validate_sdxl_teacher_dtype,
+    should_use_sdxl_teacher_hf_exact,
 )
 
 
@@ -238,3 +239,48 @@ def test_checkpoint_override_path_validation_rejects_non_safetensors(tmp_path: P
         assert ".safetensors" in str(exc)
     else:
         raise AssertionError("Expected non-safetensors checkpoint override path to fail.")
+
+
+def test_sdxl_teacher_exact_auto_mode_allows_missing_hf_dirs(tmp_path: Path):
+    assert not should_use_sdxl_teacher_hf_exact(
+        tmp_path,
+        cuda_available=True,
+        transformers_available=True,
+        exact_enabled=False,
+    )
+
+
+def test_sdxl_teacher_exact_mode_requires_complete_hf_pair(tmp_path: Path):
+    l_dir = tmp_path / "waiNSFWIllustrious_v140_clip_l_dir"
+    g_dir = tmp_path / "waiNSFWIllustrious_v140_clip_g_dir"
+    l_dir.mkdir()
+    g_dir.mkdir()
+    (l_dir / "config.json").write_bytes(b"{}")
+    (g_dir / "config.json").write_bytes(b"{}")
+    (l_dir / "model.safetensors").write_bytes(b"")
+    (g_dir / "model.safetensors").write_bytes(b"")
+
+    assert not should_use_sdxl_teacher_hf_exact(
+        tmp_path,
+        cuda_available=True,
+        transformers_available=True,
+        exact_enabled=False,
+    )
+    assert should_use_sdxl_teacher_hf_exact(
+        tmp_path,
+        cuda_available=True,
+        transformers_available=True,
+        exact_enabled=True,
+    )
+    assert not should_use_sdxl_teacher_hf_exact(
+        tmp_path,
+        cuda_available=False,
+        transformers_available=True,
+        exact_enabled=True,
+    )
+    assert not should_use_sdxl_teacher_hf_exact(
+        tmp_path,
+        cuda_available=True,
+        transformers_available=False,
+        exact_enabled=True,
+    )

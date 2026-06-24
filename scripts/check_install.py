@@ -117,10 +117,12 @@ def print_workflow_status(text_encoder_names: list[str]) -> None:
 
 def print_teacher_dir_status(comfy_root: Path) -> None:
     text_encoder_dir = comfy_root / "models" / "text_encoders"
-    print("SDXL teacher HF dirs:")
-    for expected in EXPECTED_TEACHER_DIRS:
-        marker = "OK" if (text_encoder_dir / expected).is_file() else "MISS"
-        print(f"  {marker} {expected}")
+    missing = [expected for expected in EXPECTED_TEACHER_DIRS if not (text_encoder_dir / expected).is_file()]
+    print("SDXL teacher HF dirs for strict pixel exact:")
+    if not missing:
+        print("  OK all exact HF files present")
+        return
+    print(f"  OPTIONAL_MISS strict pixel exact only: {', '.join(missing)}")
 
 
 def print_node_status(node_names: set[str]) -> None:
